@@ -1,0 +1,179 @@
+# ============================================================
+# InventIQ — Central Configuration
+# Used across:
+# - Training pipeline
+# - PPO agent
+# - SHAP explainability
+# - Knowledge base
+# - API runtime
+# ============================================================
+
+
+# ============================================================
+# DATA SETTINGS
+# ============================================================
+
+data:
+
+  raw_data_dir: "data/raw"
+
+  processed_path: "data/processed/m5_processed.csv"
+
+  seq_len: 28
+
+  horizon: 7
+
+  batch_size: 64
+
+  num_workers: 0
+
+
+
+# ============================================================
+# LSTM FORECAST MODEL
+# ============================================================
+
+lstm:
+
+  n_features: 9
+
+  hidden_size: 64
+
+  num_layers: 2
+
+  dropout: 0.2
+
+  horizon: 7
+
+  checkpoint_dir: "outputs/models"
+
+
+
+# ============================================================
+# PPO AGENT SETTINGS
+# ============================================================
+
+ppo:
+
+  total_timesteps: 200000
+
+  rollout_len: 512
+
+  n_epochs: 4
+
+  batch_size: 64
+
+  gamma: 0.99
+
+  lr: 0.0003
+
+  entropy_coef: 0.01
+
+  clip_epsilon: 0.2
+
+  checkpoint_path: "outputs/models/ppo_inventory.pt"
+
+  rollout_states_path: "outputs/models/rollout_states.npy"
+
+
+
+# ============================================================
+# INVENTORY ENVIRONMENT
+# ============================================================
+
+env:
+
+  holding_cost: 0.5
+
+  stockout_penalty: 2.0
+
+  max_stock: 500
+
+  reorder_threshold_days: 3
+
+
+
+# ============================================================
+# SHAP EXPLAINABILITY
+# ============================================================
+
+shap:
+
+  output_dir: "outputs/shap"
+
+  n_background_samples: 100
+
+  nsamples: 100
+
+
+
+# ============================================================
+# KNOWLEDGE BASE (RAG)
+# ============================================================
+
+knowledge:
+
+  # ✅ FIXED (was chromadb before)
+  vector_store_dir: "outputs/vector_store"
+
+  collection_name: "inventiq_knowledge"
+
+  docs_dir: "src/knowledge/docs"
+
+  embedding_model: "all-MiniLM-L6-v2"
+
+  chunk_size: 400
+
+  chunk_overlap: 50
+
+  top_k: 5
+
+
+
+# ============================================================
+# ASSISTANT SETTINGS
+# ============================================================
+
+assistant:
+
+  model: "gemini-1.5-flash"
+
+  temperature: 0.2
+
+  max_iterations: 6
+
+  streaming: true
+
+
+
+# ============================================================
+# API SERVER SETTINGS
+# ============================================================
+
+api:
+
+  host: "0.0.0.0"
+
+  port: 8000
+
+  reload: false
+
+  model_version: "v1.0"
+
+
+
+# ============================================================
+# OUTPUT PATHS
+# ============================================================
+
+outputs:
+
+  models_dir: "outputs/models"
+
+  vector_store_dir: "outputs/vector_store"
+
+  shap_dir: "outputs/shap"
+
+  logs_dir: "outputs/logs"
+
+  experiments_dir: "outputs/experiments"
