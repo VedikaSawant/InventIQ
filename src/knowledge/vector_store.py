@@ -2,6 +2,7 @@ import hashlib
 import logging
 
 import chromadb
+import uuid
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
@@ -58,7 +59,7 @@ class VectorStore:
         texts = [c["text"] for c in chunks]
         metadatas = [sanitize_metadata(c["metadata"]) for c in chunks]
 
-        ids = [chunk_id(t) for t in texts]
+        ids = [str(uuid.uuid4()) for _ in texts]
 
         embeddings = self.embedder.encode(
             texts,

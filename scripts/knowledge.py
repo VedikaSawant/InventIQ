@@ -63,7 +63,7 @@ def main(args):
     # Refresh SHAP chunks only (don't wipe domain docs)
     if not args.docs_only and shap_results:
         log.info("Clearing stale agent_decision chunks before re-ingestion...")
-        vs.delete_by_source_type("agent_decision")
+        vs.reset()
 
     upserted = vs.upsert(chunks)
     log.info(f"Knowledge base updated. Total docs in store: {vs.count()}")
@@ -93,16 +93,61 @@ def _generate_shap_results(cfg: dict) -> list[dict]:
         results  = []
         item_ids = cfg["data"].get("store_ids", ["CA_1"])
 
-        for i, obs in enumerate(rollout_states[:20]):
-            action    = agent.predict(obs)
-            order_qty = action * 10
-            result    = explainer.explain(
-                obs          = obs,
-                action_taken = action,
-                order_qty    = order_qty,
-                item_id      = item_ids[i % len(item_ids)],
-                step         = i,
+        # Find useful states (NOT just stockouts)
+        interesting_indices = np.where(
+            (rollout_states[:, -2] > 0) |   # days_since_order
+            (rollout_states[:, -1] > 0)     # stockout_streak
+        )[0]
+
+        # Desired sample size
+        TARGET_SAMPLES = 150
+
+        if len(interesting_indices) > 0:
+
+            n_available = len(interesting_indices)
+
+            sample_size = min(
+                TARGET_SAMPLES,
+                n_available
             )
+
+            chosen_indices = np.random.choice(
+                interesting_indices,
+                size=sample_size,
+                replace=False
+            )
+
+        else:
+
+            n_available = len(rollout_states)
+
+            sample_size = min(
+                TARGET_SAMPLES,
+                n_available
+            )
+
+            chosen_indices = np.random.choice(
+                n_available,
+                size=sample_size,
+                replace=False
+            )
+
+        for i, idx in enumerate(chosen_indices):
+
+            obs = rollout_states[idx]
+
+            action = agent.predict(obs)
+
+            order_qty = action * 10
+
+            result = explainer.explain(
+                obs=obs,
+                action_taken=action,
+                order_qty=order_qty,
+                item_id=item_ids[i % len(item_ids)],
+                step=i,
+            )
+
             results.append(result)
 
         log.info(f"Generated {len(results)} SHAP explanations.")

@@ -189,7 +189,8 @@ class AgentExplainer:
 
         print("Raw SHAP values:", shap_values)
 
-        sv = shap_values[0][action_taken]
+        # Select SHAP for chosen action
+        sv = shap_values[0][:, action_taken]
         print("Selected SHAP values:", sv)
         print("Max SHAP abs:", np.max(np.abs(sv)))
 
@@ -199,21 +200,21 @@ class AgentExplainer:
         print("Action taken:", action_taken)
         print("Order qty:", order_qty)
 
+        for name, val in zip(AGENT_FEATURE_NAMES, sv):
+            print(f"{name}: {val:.8f}")
+
         print("================================\n")
 
-        sv = np.array(shap_values).reshape(-1)
-
+        # Build feature dictionary correctly
         feature_importances = {
-            name: float(sv[i])
-            for i, name in enumerate(
-                AGENT_FEATURE_NAMES
-            )
+            AGENT_FEATURE_NAMES[i]: float(sv[i])
+            for i in range(len(AGENT_FEATURE_NAMES))
         }
 
         plot_path = _plot_waterfall(
             sv,
             title=f"{item_id} step {step}",
-            filename=f"agent_{item_id}.png"
+            filename=f"agent_{item_id}_step_{step}.png"
         )
 
         summary = self._build_summary(
@@ -312,16 +313,19 @@ def build_agent_explainer(
             obs_array.astype(np.float32)
         )
 
+        # Ensure batch shape
+        if len(t.shape) == 1:
+            t = t.unsqueeze(0)
+
         with torch.no_grad():
 
             logits, _ = agent.policy(t)
 
-            probs = torch.softmax(
-                logits,
-                dim=-1
-            )
+        print("Input shape:", t.shape)
+        print("Logits shape:", logits.shape)
 
-        return probs.numpy()
+        # 🔥 RETURN LOGITS — NOT PROBABILITIES
+        return logits.cpu().numpy()
 
     return AgentExplainer(
         predict_fn,

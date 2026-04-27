@@ -20,7 +20,7 @@ from src.api.models import (
     DailySimStep,
 )
 
-from src.data.dataset import FEATURE_COLS, SEQ_LEN
+from src.data.data_loader import FEATURE_COLS, SEQ_LEN
 from src.environment.inventory_env import ORDER_STEP
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def run_forecast(body: ForecastRequest, request: Request):
 
     scaled = ctx.scaler.transform(window_np)
 
-    tensor = torch.from_numpy(scaled)
+    tensor = torch.from_numpy(scaled).float()
 
     scaled_fc = ctx.trainer.forecast(tensor)
 
@@ -100,11 +100,11 @@ def get_inventory_status(item_id: str, request: Request):
 
         item_df = df[df["id"] == item_id].tail(SEQ_LEN)
 
-        window_np = item_df[FEATURE_COLS].values
+        window_np = item_df[FEATURE_COLS].values.astype(np.float32)
 
         scaled = ctx.scaler.transform(window_np)
 
-        tensor = torch.from_numpy(scaled)
+        tensor = torch.from_numpy(scaled).float()
 
         scaled_fc = ctx.trainer.forecast(tensor)
 
@@ -142,11 +142,11 @@ def recommend_order(body: DecisionRequest, request: Request):
 
     ctx = request.app.state.ctx
 
-    window_np = np.array(body.window)
+    window_np = np.array(body.window, dtype=np.float32)
 
     scaled = ctx.scaler.transform(window_np)
 
-    tensor = torch.from_numpy(scaled)
+    tensor = torch.from_numpy(scaled).float()
 
     scaled_fc = ctx.trainer.forecast(tensor)
 
@@ -239,7 +239,7 @@ def run_simulation(body: SimulationRequest, request: Request):
                 stock=info["stock"],
                 demand=info["demand_today"],
                 order_qty=info["order_qty"],
-                units_sold=info["units_sold"],
+                units_sold=info["demand_today"] - info["unmet_demand"],
                 unmet_demand=info["unmet_demand"],
                 reward=reward,
             )

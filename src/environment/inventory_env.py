@@ -12,12 +12,12 @@ HORIZON = 7
 N_FEATURES = 9
 
 ACTION_LEVELS = 11
-MAX_ORDER = 100
+MAX_ORDER = 40
 ORDER_STEP = MAX_ORDER // (ACTION_LEVELS - 1)
 
 STATE_DIM = 1 + HORIZON + 1 + 1
 
-MAX_ORDER_GAP = 30
+MAX_ORDER_GAP = 14
 MAX_STOCKOUT_STREAK = 7
 
 
@@ -33,13 +33,14 @@ class InventoryEnv(gym.Env):
         feature_matrix,
         forecaster,
         scaler,
-        initial_stock=50,
-        holding_cost=0.5,
-        stockout_penalty=2.0,
-        max_stock=500,
+        initial_stock=5,
+        holding_cost=1,
+        stockout_penalty=10.0,
+        max_stock=150,
     ):
 
         super().__init__()
+        self.unmet_values = []
 
         assert len(demand_series) == len(feature_matrix)
         assert len(demand_series) > SEQ_LEN + HORIZON
@@ -73,6 +74,8 @@ class InventoryEnv(gym.Env):
 
         super().reset(seed=seed)
 
+        self.unmet_values = []
+
         self.t = SEQ_LEN
         self.stock = float(self.initial_stock)
 
@@ -96,12 +99,49 @@ class InventoryEnv(gym.Env):
         self._apply_order(order_qty)
 
         reward, demand_today, unmet = self._fulfill_demand()
+        self.unmet_values.append(unmet)
 
         self._update_stockout(unmet)
 
         self.t += 1
 
         terminated = self.t >= len(self.demand) - HORIZON
+
+        if terminated and len(self.unmet_values) > 0:
+
+            arr = np.array(self.unmet_values)
+
+            print("\n===== UNMET STATISTICS =====")
+
+            print("Total steps:", len(arr))
+
+            print(
+                "Unmet > 0 count:",
+                np.sum(arr > 0)
+            )
+
+            print(
+                "Percent unmet:",
+                round(100 * np.mean(arr > 0), 2),
+                "%"
+            )
+
+            print(
+                "Max unmet:",
+                round(np.max(arr), 2)
+            )
+
+            print(
+                "Avg unmet:",
+                round(np.mean(arr), 2)
+            )
+
+            print(
+                "Min unmet:",
+                round(np.min(arr), 2)
+            )
+
+            print("============================\n")
 
         obs = (
             self._get_obs()
@@ -116,6 +156,18 @@ class InventoryEnv(gym.Env):
             "stock": self.stock,
             "reward": reward,
         }
+
+        # print(
+        #     "order_qty:", order_qty,
+        #     "days_since_order:", self.days_since_order,
+        #     "stockout_streak:", self.stockout_streak
+        # )
+
+        # print("Stock:", self.stock)
+        # print("Demand:", demand_today)
+        # print("Unmet:", unmet)
+        # print("Stockout streak:", self.stockout_streak)
+        # print("Days since order:", self.days_since_order)
 
         return obs, reward, terminated, False, info
 
@@ -137,13 +189,23 @@ class InventoryEnv(gym.Env):
 
     def _fulfill_demand(self):
 
-        demand_today = float(self.demand[self.t])
+        base_demand = float(self.demand[self.t])
+
+        noise = np.random.normal(
+            0,
+            max(1, 0.3 * base_demand)
+        )
+
+        demand_today = max(
+            2 * (base_demand + noise),
+            0.0
+        )
 
         units_sold = min(self.stock, demand_today)
 
         unmet = max(demand_today - self.stock, 0.0)
 
-        self.stock = max(self.stock - demand_today, 0.0)
+        self.stock -= units_sold
 
         holding_cost = self.holding_cost * self.stock
 

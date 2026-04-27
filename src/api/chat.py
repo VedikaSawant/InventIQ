@@ -47,7 +47,7 @@ GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-LLM_MODEL = "gemini-1.5-flash"
+LLM_MODEL = "gemini-2.5-flash"
 TOP_K_RETRIEVAL   = 5
 MAX_TOKENS        = 512
 
@@ -102,6 +102,21 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
             item_id    = body.item_id,
             top_k      = TOP_K_RETRIEVAL,
         )
+        logger.info(f"Item ID: {body.item_id}")
+
+        logger.info(
+            f"Vector store count: {ctx.vector_store.count()}"
+        )
+
+        logger.info(f"Retrieved {len(retrieved)} chunks")
+
+        for r in retrieved:
+            logger.info(
+                f"Chunk meta: {r['metadata']}"
+            )
+            logger.info(
+                f"Chunk text: {r['text'][:150]}"
+            )
     else:
         retrieved = ctx.vector_store.query(
             query_text = body.message,

@@ -12,9 +12,11 @@ import torch
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.forecasting.model import DemandLSTM
-from src.forecasting.trainer import LSTMTrainer
-from src.agent.ppo_agent import PPOAgent
+from src.forecasting.forecasting import (
+    DemandLSTM,
+    DemandForecastingSystem
+)
+from src.agent.rl_agent import PPOAgent
 
 from src.explainability.shap_explainer import (
     build_agent_explainer,
@@ -98,14 +100,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("Loading DemandLSTM...")
 
-    lstm_model = DemandLSTM()
+    ctx.trainer = DemandForecastingSystem()
 
-    ctx.trainer = LSTMTrainer(
-        lstm_model,
-        checkpoint_dir="outputs/models"
-    )
-
-    ctx.trainer.load("best_model.pt")
+    ctx.trainer.load()
 
     ctx.trainer.model.eval()
 

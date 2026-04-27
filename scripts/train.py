@@ -150,7 +150,7 @@ def main(args):
         log.info("PPO training complete.")
 
 
-def _collect_rollout_states(agent, env, n=200):
+def _collect_rollout_states(agent, env, n=2000):
 
     states = []
 
@@ -181,7 +181,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--batch_size", type=int, default=64)
 
-    parser.add_argument("--timesteps", type=int, default=200_000)
+    parser.add_argument("--timesteps", type=int, default=60_000)
 
     parser.add_argument("--skip_data", action="store_true")
 
