@@ -21,13 +21,8 @@ env_path = Path(__file__).resolve().parent / ".env"
 
 load_dotenv(env_path)
 
-genai.configure(
-    api_key=os.getenv("GOOGLE_API_KEY")
-)
-
-gemini_model = genai.GenerativeModel(
-    "gemini-2.5-flash"
-)
+KEY_1 = os.getenv("GOOGLE_API_KEY_1")
+KEY_2 = os.getenv("GOOGLE_API_KEY_2")
 
 vector_store = VectorStore()
 
@@ -549,14 +544,9 @@ elif page == "🤖 Decisions":
     # KPI Display
     # ---------------------------------------------
 
-    col1, col2 = st.columns(2)
+    col1, = st.columns(1)
 
     col1.metric(
-        "📦 Current Stock",
-        current_stock
-    )
-
-    col2.metric(
         "🛒 Recommended Order",
         recommended_order
     )
@@ -599,13 +589,59 @@ elif page == "🤖 Decisions":
 
     if explanation_text:
 
-        st.subheader(
-            "📝 Decision Explanation"
-        )
+        st.subheader("📝 Decision Explanation")
 
-        st.info(
-            explanation_text
-        )
+        try:
+
+            # Convert SHAP to dataframe
+            shap_df = pd.DataFrame(shap_data)
+
+            shap_df = shap_df.sort_values(
+                "value",
+                ascending=False
+            )
+
+            # Take top 3 features
+            top_features = shap_df.head(3)
+
+            prompt = f"""
+    You are an inventory assistant.
+
+    Explain this inventory decision
+    using the actual influencing factors.
+
+    Item:
+    {selected_item}
+
+    Recommended Order:
+    {recommended_order}
+
+    Top Influencing Factors:
+    {top_features.to_dict()}
+
+    Write:
+
+    • Explain clearly WHY the order was made
+    • Mention each factor explicitly
+    • Translate technical names into plain language
+    • Keep it specific (not vague)
+    • Use bullet points
+    """
+
+            genai.configure(api_key=KEY_1)
+
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash"
+            )
+
+            gemini_response = model.generate_content(
+                prompt
+            )
+            st.success(gemini_response.text)
+
+        except Exception as e:
+
+            st.info(explanation_text)
 
     # ---------------------------------------------
     # SHAP Plot (Moved from Explainability page)
@@ -815,7 +851,13 @@ Provide:
 Use short bullet points.
 """
 
-        gemini_response = gemini_model.generate_content(
+        genai.configure(api_key=KEY_2)
+
+        model = genai.GenerativeModel(
+            "gemini-2.5-flash"
+        )
+
+        gemini_response = model.generate_content(
             prompt
         )
 
