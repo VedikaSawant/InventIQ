@@ -55,11 +55,13 @@ def main(args):
         data_cfg = cfg["data"]
         model_cfg = cfg.get("lstm", {})
 
-        train_loader, val_loader, _, scaler = get_dataloaders(
+        train_loader, val_loader, _, scaler, target_scaler = get_dataloaders(
             batch_size=args.batch_size
         )
 
         system = DemandForecastingSystem()
+
+        system.target_scaler = target_scaler
 
         system.train(
             train_loader=train_loader,
