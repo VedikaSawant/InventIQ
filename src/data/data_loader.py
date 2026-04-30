@@ -14,11 +14,31 @@ from torch.utils.data import Dataset, DataLoader
 CONFIG = {
     "raw_dir": "data/raw",
     "processed_path": "data/processed/m5_processed.csv",
-    "store_ids": ["CA_1"],
-    "n_items": 150
+
+    "store_ids": [
+        "CA_1",
+        "CA_2",
+        "TX_1",
+        "WI_3"
+    ],
+
+    "n_items": None,
+
+    "selected_items": [
+        "FOODS_3_586",
+        "FOODS_3_090",
+        "FOODS_3_555",
+        "FOODS_3_252",
+        "FOODS_3_587",
+        "FOODS_3_714",
+        "FOODS_3_694",
+        "FOODS_2_360",
+        "FOODS_3_150",
+        "FOODS_3_080"
+    ]
 }
 
-SEQ_LEN = 28
+SEQ_LEN = 14
 HORIZON = 7
 
 FEATURE_COLS = [
@@ -57,10 +77,16 @@ def run_data_pipeline():
         os.path.join(raw_dir, "sell_prices.csv")
     )
 
-    # Filter stores
+    # Filter by store
     sales = sales[
         sales["store_id"].isin(CONFIG["store_ids"])
     ]
+
+    # NEW — filter specific items
+    if CONFIG.get("selected_items"):
+        sales = sales[
+            sales["item_id"].isin(CONFIG["selected_items"])
+        ]
 
     if CONFIG["n_items"]:
         sales = (
@@ -150,7 +176,6 @@ def run_data_pipeline():
     # rows at the START of each item — those early rows should be dropped,
     # but the rest of the item's history is perfectly valid and must be kept.
     feature_cols_with_target = FEATURE_COLS + [TARGET_COL]
-
     df = (
         df.groupby("id", group_keys=False)
         .apply(lambda g: g.dropna(subset=feature_cols_with_target))
@@ -165,6 +190,14 @@ def run_data_pipeline():
         os.path.dirname(CONFIG["processed_path"]),
         exist_ok=True
     )
+
+    # Keep only items with meaningful sales activity
+    item_mean = df.groupby("id")["sales"].mean()
+    active_items = item_mean[item_mean >= 0.5].index  # at least 1 sale/day average
+    df = df[df["id"].isin(active_items)]
+
+    print(f"Active items kept: {len(active_items)} / {item_mean.shape[0]}")
+    print(f"After filtering: {df.shape}")
 
     df.to_csv(CONFIG["processed_path"], index=False)
 
@@ -205,7 +238,7 @@ class M5Dataset(Dataset):
         # --- Target scaler (separate, only for sales) ---
         self.target_scaler = target_scaler or StandardScaler()
 
-        targets = df[TARGET_COL].values.astype(np.float32).reshape(-1, 1)
+        targets = np.log1p(df[TARGET_COL].values.astype(np.float32)).reshape(-1, 1)
 
         if fit_scaler:
             targets = self.target_scaler.fit_transform(targets)
@@ -266,7 +299,7 @@ class M5Dataset(Dataset):
 # DATALOADER FACTORY
 # =========================================================
 
-def get_dataloaders(batch_size=64):
+def get_dataloaders(batch_size=128):
 
     df = pd.read_csv(
         CONFIG["processed_path"],
@@ -315,9 +348,9 @@ def get_dataloaders(batch_size=64):
     print("Test windows:", len(test_ds))
 
     return (
-        DataLoader(train_ds, batch_size=batch_size, shuffle=True),
-        DataLoader(val_ds,   batch_size=batch_size),
-        DataLoader(test_ds,  batch_size=batch_size),
+        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True),
+        DataLoader(val_ds,   batch_size=batch_size, num_workers=4, pin_memory=True),
+        DataLoader(test_ds,  batch_size=batch_size, num_workers=4, pin_memory=True),
         train_ds.scaler,
         train_ds.target_scaler
     )

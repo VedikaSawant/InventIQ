@@ -9,7 +9,7 @@ import torch
 
 SEQ_LEN = 28
 HORIZON = 7
-N_FEATURES = 9
+N_FEATURES = 14
 
 ACTION_LEVELS = 11
 MAX_ORDER = 40
@@ -35,7 +35,7 @@ class InventoryEnv(gym.Env):
         scaler,
         initial_stock=5,
         holding_cost=1,
-        stockout_penalty=10.0,
+        stockout_penalty=8.0,
         max_stock=150,
     ):
 
@@ -197,7 +197,7 @@ class InventoryEnv(gym.Env):
         )
 
         demand_today = max(
-            2 * (base_demand + noise),
+            (base_demand + noise),
             0.0
         )
 
@@ -212,6 +212,13 @@ class InventoryEnv(gym.Env):
         stockout_cost = self.stockout_pen * unmet
 
         reward = -(holding_cost + stockout_cost)
+
+        overstock_penalty = 0.5 * max(
+            self.stock - 0.8 * self.max_stock,
+            0
+        )
+
+        reward -= overstock_penalty
 
         return reward, demand_today, unmet
 

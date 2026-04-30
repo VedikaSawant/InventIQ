@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # CONSTANTS (centralized — very important)
 # =========================================================
 
-SEQ_LEN = 28
+SEQ_LEN = 14
 HORIZON = 7
 N_FEATURES = 14
 
@@ -22,13 +22,7 @@ N_FEATURES = 14
 # =========================================================
 
 class DemandLSTM(nn.Module):
-
-    def __init__(
-        self,
-        hidden_size=64,
-        num_layers=2,
-        dropout=0.3
-    ):
+    def __init__(self, hidden_size=64, num_layers=2, dropout=0.2):
         super().__init__()
 
         self.lstm = nn.LSTM(
@@ -36,34 +30,28 @@ class DemandLSTM(nn.Module):
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0
+            dropout=dropout
         )
 
-        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(0.3)
 
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.BatchNorm1d(hidden_size),
+            nn.Linear(hidden_size, 64),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, HORIZON)
+            nn.Dropout(0.2),
+            nn.Linear(64, HORIZON)
         )
 
     def forward(self, x):
+        lstm_out, (hidden, _) = self.lstm(x)
+        out = self.dropout(hidden[-1])
+        return self.head(out)
 
-        _, (hidden, _) = self.lstm(x)
 
-        context = hidden[-1]
-
-        context = self.layer_norm(context)
-
-        return self.head(context)
-
-    def freeze(self):
-
-        for p in self.parameters():
-            p.requires_grad = False
-
-        self.eval()
-
+class LogCoshLoss(nn.Module):
+    def forward(self, pred, target):
+        return torch.mean(torch.log(torch.cosh(pred - target + 1e-8)))
 
 # =========================================================
 # TRAINING SYSTEM
@@ -73,8 +61,8 @@ class DemandForecastingSystem:
 
     def __init__(
         self,
-        lr=1e-4,
-        weight_decay=1e-4,
+        lr=5e-4,
+        weight_decay=1e-5,
         device="cpu",
         checkpoint_path="outputs/models/best_model.pt"
     ):
@@ -85,7 +73,7 @@ class DemandForecastingSystem:
 
         self.target_scaler = None
 
-        self.criterion = nn.MSELoss()
+        self.criterion = LogCoshLoss()
 
         self.optimizer = Adam(
             self.model.parameters(),
@@ -96,8 +84,8 @@ class DemandForecastingSystem:
         self.scheduler = ReduceLROnPlateau(
             self.optimizer,
             mode="min",
-            factor=0.3,
-            patience=2
+            factor=0.5,
+            patience=4
         )
 
         self.checkpoint_path = checkpoint_path
@@ -112,8 +100,8 @@ class DemandForecastingSystem:
         self,
         train_loader,
         val_loader,
-        epochs=20,
-        early_stop=5
+        epochs=25,
+        early_stop=10
     ):
 
         patience = 0
@@ -178,7 +166,7 @@ class DemandForecastingSystem:
 
             nn.utils.clip_grad_norm_(
                 self.model.parameters(),
-                max_norm=0.5
+                max_norm=1.0
             )
 
             self.optimizer.step()
@@ -241,13 +229,13 @@ class DemandForecastingSystem:
 
         # Now inverse scale
 
-        preds_real = self.target_scaler.inverse_transform(
+        preds_real = np.expm1(self.target_scaler.inverse_transform(
             preds_np.reshape(-1, 1)
-        )
+        ))
 
-        targets_real = self.target_scaler.inverse_transform(
+        targets_real = np.expm1(self.target_scaler.inverse_transform(
             targets_np.reshape(-1, 1)
-        )
+        ))
 
         targets_real = targets_real.reshape(-1, HORIZON)
         preds_real = preds_real.reshape(-1, HORIZON)
@@ -256,11 +244,8 @@ class DemandForecastingSystem:
         preds_real = preds_real.flatten()
 
         # R² Score
-        ss_res = torch.sum((targets_all - preds_all) ** 2)
-        ss_tot = torch.sum(
-            (targets_all - torch.mean(targets_all)) ** 2
-        )
-
+        ss_res = np.sum((targets_real - preds_real) ** 2)
+        ss_tot = np.sum((targets_real - targets_real.mean()) ** 2)
         r2 = 1 - ss_res / ss_tot
 
         return mse, rmse, mae, r2.item()
@@ -318,6 +303,10 @@ class DemandForecastingSystem:
 
         self.load()
 
-        self.model.freeze()
+        # Freeze weights properly
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        self.model.eval()
 
         return self.model

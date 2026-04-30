@@ -13,8 +13,8 @@ from torch.distributions import Categorical
 # =========================================================
 
 ACTION_LEVELS = 11
-ORDER_STEP = 10
-MAX_ORDER = 100
+ORDER_STEP = 4
+MAX_ORDER = 40
 
 HORIZON = 7
 
@@ -229,9 +229,8 @@ class PPOAgent:
         for t in reversed(range(len(rewards))):
 
             next_val = (
-                last_value
-                if t == len(rewards) - 1
-                else values[t + 1]
+                last_value if t == len(rewards) - 1
+                else (0.0 if dones[t] else values[t + 1])
             )
 
             delta = (

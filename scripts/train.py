@@ -59,6 +59,10 @@ def main(args):
             batch_size=args.batch_size
         )
 
+        # Correct — target_scaler is already returned
+        print("Target std:", target_scaler.scale_)
+        print("Target mean:", target_scaler.mean_)
+
         system = DemandForecastingSystem()
 
         system.target_scaler = target_scaler
@@ -108,9 +112,7 @@ def main(args):
         with open("outputs/models/scaler.pkl", "rb") as f:
             scaler = pickle.load(f)
 
-        train_loader, _, _, _ = get_dataloaders(
-            batch_size=1
-        )
+        train_loader, _, _, _, _ = get_dataloaders(batch_size=1)
 
         dataset = train_loader.dataset
 
@@ -179,11 +181,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--config", default="config.yaml")
 
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=25)
 
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=128)
 
-    parser.add_argument("--timesteps", type=int, default=60_000)
+    parser.add_argument("--timesteps", type=int, default=20_000)
 
     parser.add_argument("--skip_data", action="store_true")
 
