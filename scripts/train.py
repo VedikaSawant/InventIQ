@@ -60,10 +60,12 @@ def main(args):
         )
 
         # Correct — target_scaler is already returned
-        print("Target std:", target_scaler.scale_)
-        print("Target mean:", target_scaler.mean_)
+        print("Target scale:", target_scaler.scale_)
+        print("Target center:", target_scaler.center_)
 
-        system = DemandForecastingSystem()
+        system = DemandForecastingSystem(
+            lr=5e-5
+        )
 
         system.target_scaler = target_scaler
 
@@ -79,6 +81,11 @@ def main(args):
 
         with open(scaler_path, "wb") as f:
             pickle.dump(scaler, f)
+
+        target_scaler_path = "outputs/models/target_scaler.pkl"
+
+        with open(target_scaler_path, "wb") as f:
+            pickle.dump(target_scaler, f)
 
         log.info("LSTM training complete.")
 
@@ -101,7 +108,9 @@ def main(args):
 
         # Load trained LSTM
 
-        system = DemandForecastingSystem()
+        system = DemandForecastingSystem(
+            lr=5e-5
+        )
 
         system.load()
 
@@ -111,6 +120,9 @@ def main(args):
 
         with open("outputs/models/scaler.pkl", "rb") as f:
             scaler = pickle.load(f)
+
+        with open("outputs/models/target_scaler.pkl", "rb") as f:
+            target_scaler = pickle.load(f)
 
         train_loader, _, _, _, _ = get_dataloaders(batch_size=1)
 
@@ -125,6 +137,7 @@ def main(args):
             feature_matrix=feature_matrix,
             forecaster=forecaster,
             scaler=scaler,
+            target_scaler=target_scaler,
         )
 
         agent = PPOAgent(
@@ -181,7 +194,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--config", default="config.yaml")
 
-    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--epochs", type=int, default=50)
 
     parser.add_argument("--batch_size", type=int, default=128)
 

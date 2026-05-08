@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import torch
 
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -16,39 +16,55 @@ CONFIG = {
     "processed_path": "data/processed/m5_processed.csv",
 
     "store_ids": [
-        "CA_1",
-        "CA_2",
-        "TX_1",
-        "WI_3"
+        "CA_3",
+        "WI_3",
+        "TX_3"
     ],
 
     "n_items": None,
 
     "selected_items": [
         "FOODS_3_586",
-        "FOODS_3_090",
-        "FOODS_3_555",
-        "FOODS_3_252",
-        "FOODS_3_587",
-        "FOODS_3_714",
+        "FOODS_3_226",
         "FOODS_3_694",
-        "FOODS_2_360",
-        "FOODS_3_150",
+        "FOODS_3_377",
         "FOODS_3_080"
     ]
 }
 
-SEQ_LEN = 14
-HORIZON = 7
+SEQ_LEN = 28
+HORIZON = 1
 
 FEATURE_COLS = [
     "sell_price",
-    "wday", "month",
-    "is_event", "is_snap",
-    "lag_1", "lag_7", "lag_14", "lag_28",      # added lag_14
-    "rolling_7", "rolling_14", "rolling_28",    # added rolling_14
-    "rolling_7_std",                             # added volatility
-    "item_idx"                                   # added item identity
+
+    # calendar
+    "wday",
+    "month",
+    "is_event",
+    "is_snap",
+
+    # lag features
+    "lag_1",
+    "lag_7",
+    "lag_14",
+    "lag_28",
+
+    # rolling means
+    "rolling_7",
+    "rolling_14",
+    "rolling_28",
+
+    # volatility
+    "rolling_7_std",
+
+    # sparse demand features
+    "days_since_sale",
+    "nonzero_7",
+    "nonzero_28",
+
+    # item identity
+    "item_idx"
 ]
 
 TARGET_COL = "sales"
@@ -135,6 +151,108 @@ def run_data_pipeline():
     df["date"] = pd.to_datetime(df["date"])
     df.sort_values(["id", "date"], inplace=True)
 
+    # =========================================================
+    # KEEP ONLY FOODS_3
+    # =========================================================
+
+    df = df[df["dept_id"] == "FOODS_3"]
+
+    # =========================================================
+    # REMOVE LEADING ZEROS
+    # =========================================================
+
+    def trim_leading_zeros(group):
+
+        first_sale_idx = group[group["sales"] > 0].index
+
+        if len(first_sale_idx) == 0:
+            return pd.DataFrame(columns=group.columns)
+
+        first_idx = first_sale_idx[0]
+
+        return group.loc[first_idx:]
+
+    df = (
+        df.groupby("id", group_keys=False)
+        .apply(trim_leading_zeros)
+    )
+
+    item_stats = (
+        df.groupby("id")["sales"]
+        .agg([
+            ("mean_sales", "mean"),
+            ("std_sales", "std"),
+            ("nonzero_ratio", lambda x: (x > 0).mean())
+        ])
+    )
+
+    item_stats["cv"] = (
+        item_stats["std_sales"] /
+        (item_stats["mean_sales"] + 1e-6)
+    )
+
+    print(
+        item_stats.sort_values(
+            ["cv", "mean_sales"]
+        ).head(20)
+    )
+
+    CV_THRESHOLD = 0.45
+
+    valid_ids = item_stats[
+        item_stats["cv"] < CV_THRESHOLD
+    ].index
+
+    df = df[df["id"].isin(valid_ids)]
+
+    print(f"After CV filtering: {df.shape}")
+    print(f"Remaining series: {len(valid_ids)}")
+
+    # =========================================================
+    # AUTOSELECT BEST ITEMS FOR FORECASTING
+    # =========================================================
+
+    # item_stats = (
+    #     df.groupby("id")["sales"]
+    #     .agg([
+    #         ("mean_sales", "mean"),
+    #         ("std_sales", "std"),
+    #         ("nonzero_ratio", lambda x: (x > 0).mean()),
+    #         ("total_sales", "sum")
+    #     ])
+    # )
+
+    # # Stability score
+    # item_stats["cv"] = (
+    #     item_stats["std_sales"] /
+    #     (item_stats["mean_sales"] + 1e-6)
+    # )
+
+    # # Prefer:
+    # # high activity
+    # # lower volatility
+    # # decent total demand
+
+    # filtered_items = item_stats[
+    #     (item_stats["nonzero_ratio"] >= 0.4) &
+    #     (item_stats["mean_sales"] >= 10)
+    # ]
+
+    # # Take best 50 stable items
+    # best_items = (
+    #     filtered_items
+    #     .sort_values(
+    #         ["nonzero_ratio", "total_sales"],
+    #         ascending=False
+    #     )
+    #     .head(25)
+    #     .index
+    # )
+
+    # df = df[df["id"].isin(best_items)]
+
+    # print(f"Selected {len(best_items)} stable items")
+
     # Feature engineering
     # sell_price fill must come AFTER the left join so NaNs are filled
     df["sell_price"] = (
@@ -145,11 +263,67 @@ def run_data_pipeline():
     # After groupby id, add label-encoded item ID as a feature
     df["item_idx"] = df.groupby("id").ngroup().astype(np.float32)
     df["item_idx"] = df["item_idx"] / df["item_idx"].max()  # normalize 0-1
+    # df["item_idx"] = (
+    #     df.groupby("id")
+    #     .ngroup()
+    #     .astype(np.float32)
+    # )
+
+    # max_idx = df["item_idx"].max()
+
+    # if max_idx > 0:
+    #     df["item_idx"] = df["item_idx"] / max_idx
+    # else:
+    #     df["item_idx"] = 0.0
 
     df["is_event"] = df["event_name_1"].notna().astype(int)
     df["is_snap"] = df["snap_CA"].astype(int)
 
     g = df.groupby("id")["sales"]
+
+    # =========================================================
+    # SPARSE DEMAND FEATURES
+    # =========================================================
+
+    # Days since last nonzero sale
+    def compute_days_since_sale(series):
+        last_sale = -1
+        result = []
+
+        for i, val in enumerate(series):
+
+            if val > 0:
+                last_sale = i
+                result.append(0)
+            else:
+                if last_sale == -1:
+                    result.append(i + 1)
+                else:
+                    result.append(i - last_sale)
+
+        return pd.Series(result, index=series.index)
+
+    df["days_since_sale"] = (
+        df.groupby("id")["sales"]
+        .transform(compute_days_since_sale)
+    )
+
+    # Count of nonzero sales in recent windows
+    df["nonzero_7"] = (
+        g.transform(
+            lambda x: x.shift(1)
+            .rolling(7)
+            .apply(lambda y: (y > 0).sum(), raw=True)
+        )
+    )
+
+    df["nonzero_28"] = (
+        g.transform(
+            lambda x: x.shift(1)
+            .rolling(28)
+            .apply(lambda y: (y > 0).sum(), raw=True)
+        )
+    )
 
     df["lag_1"]  = g.shift(1)
     df["lag_7"]  = g.shift(7)
@@ -191,12 +365,21 @@ def run_data_pipeline():
         exist_ok=True
     )
 
-    # Keep only items with meaningful sales activity
-    item_mean = df.groupby("id")["sales"].mean()
-    active_items = item_mean[item_mean >= 0.5].index  # at least 1 sale/day average
-    df = df[df["id"].isin(active_items)]
+    # =========================================================
+    # KEEP ONLY SUFFICIENTLY ACTIVE ITEMS
+    # =========================================================
 
-    print(f"Active items kept: {len(active_items)} / {item_mean.shape[0]}")
+    # nonzero_ratio = (
+    #     df.groupby("id")["sales"]
+    #     .apply(lambda x: (x > 0).mean())
+    # )
+
+    # active_items = nonzero_ratio[
+    #     nonzero_ratio >= 0.20
+    # ].index
+    # df = df[df["id"].isin(active_items)]
+
+    # print(f"Active items kept: {len(active_items)} / {len(nonzero_ratio)}")
     print(f"After filtering: {df.shape}")
 
     df.to_csv(CONFIG["processed_path"], index=False)
@@ -226,7 +409,7 @@ class M5Dataset(Dataset):
         self.horizon = horizon
 
         # --- Feature scaler (no target column inside) ---
-        self.scaler = scaler or StandardScaler()
+        self.scaler = scaler or RobustScaler()
 
         features = df[FEATURE_COLS].values.astype(np.float32)
 
@@ -236,7 +419,7 @@ class M5Dataset(Dataset):
             features = self.scaler.transform(features)
 
         # --- Target scaler (separate, only for sales) ---
-        self.target_scaler = target_scaler or StandardScaler()
+        self.target_scaler = target_scaler or RobustScaler()
 
         targets = np.log1p(df[TARGET_COL].values.astype(np.float32)).reshape(-1, 1)
 
@@ -312,8 +495,8 @@ def get_dataloaders(batch_size=128):
     dates = np.sort(df["date"].unique())
 
     n = len(dates)
-    train_cutoff = dates[int(n * 0.7)]
-    val_cutoff   = dates[int(n * 0.85)]
+    train_cutoff = dates[int(n * 0.8)]
+    val_cutoff   = dates[int(n * 0.9)]
 
     train = df[df["date"] <  train_cutoff]
     val   = df[(df["date"] >= train_cutoff) & (df["date"] < val_cutoff)]

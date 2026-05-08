@@ -1,22 +1,21 @@
 # frontend/app.py
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-import json
-
+import os
 from pathlib import Path
-import matplotlib.pyplot as plt
 
 import google.generativeai as genai
-import os
-
-from src.knowledge.vector_store import VectorStore
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
 from dotenv import load_dotenv
-from pathlib import Path
 
-# Load .env from project root
+
+# =========================================================
+# ENV
+# =========================================================
+
 env_path = Path(__file__).resolve().parent / ".env"
 
 load_dotenv(env_path)
@@ -24,7 +23,6 @@ load_dotenv(env_path)
 KEY_1 = os.getenv("GOOGLE_API_KEY_1")
 KEY_2 = os.getenv("GOOGLE_API_KEY_2")
 
-vector_store = VectorStore()
 
 # =========================================================
 # CONFIG
@@ -35,11 +33,9 @@ st.set_page_config(
     layout="wide"
 )
 
-API_URL = "http://localhost:8000/chat/"
+BASE_API = "http://localhost:8000"
 
 DATA_PATH = "data/processed/m5_processed.csv"
-
-SHAP_DIR = Path("outputs/shap")
 
 
 # =========================================================
@@ -57,16 +53,116 @@ def load_data():
 
         return pd.DataFrame()
 
-    df = pd.read_csv(DATA_PATH)
-
-    return df
+    return pd.read_csv(DATA_PATH)
 
 
 df = load_data()
 
 if df.empty:
-
     st.stop()
+
+
+# =========================================================
+# FEATURE CONFIG
+# MUST MATCH TRAINING PIPELINE EXACTLY
+# =========================================================
+
+FEATURE_COLS = [
+    "sell_price",
+
+    # calendar
+    "wday",
+    "month",
+    "is_event",
+    "is_snap",
+
+    # lag features
+    "lag_1",
+    "lag_7",
+    "lag_14",
+    "lag_28",
+
+    # rolling means
+    "rolling_7",
+    "rolling_14",
+    "rolling_28",
+
+    # volatility
+    "rolling_7_std",
+
+    # sparse demand
+    "days_since_sale",
+    "nonzero_7",
+    "nonzero_28",
+
+    # item identity
+    "item_idx"
+]
+
+WINDOW_SIZE = 28
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def build_window(item_df):
+
+    required = item_df.tail(WINDOW_SIZE)
+
+    if len(required) < WINDOW_SIZE:
+        return None
+
+    return required[FEATURE_COLS].values.tolist()
+
+
+def call_forecast_api(item_id, window):
+
+    payload = {
+        "item_id": item_id,
+        "window": window
+    }
+
+    response = requests.post(
+        f"{BASE_API}/forecast",
+        json=payload
+    )
+
+    if response.status_code != 200:
+        raise Exception(response.text)
+
+    return response.json()
+
+
+def call_inventory_api(item_id):
+
+    response = requests.get(
+        f"{BASE_API}/inventory/{item_id}"
+    )
+
+    if response.status_code != 200:
+        raise Exception(response.text)
+
+    return response.json()
+
+
+def call_decision_api(item_id, current_stock, window):
+
+    payload = {
+        "item_id": item_id,
+        "current_stock": current_stock,
+        "window": window
+    }
+
+    response = requests.post(
+        f"{BASE_API}/decisions/recommend",
+        json=payload
+    )
+
+    if response.status_code != 200:
+        raise Exception(response.text)
+
+    return response.json()
 
 
 # =========================================================
@@ -81,35 +177,25 @@ page = st.sidebar.radio(
 
     [
         "🏪 Dashboard",
-
         "📦 Forecast",
-
         "🤖 Decisions",
-
         "✨ AI Insights"
     ]
 )
 
-
-# Select Item
-
 ITEM_COL = "item_id"
+
+selected_item = None
 
 if ITEM_COL in df.columns:
 
     items = sorted(df[ITEM_COL].unique())
 
     selected_item = st.sidebar.selectbox(
-
         "Select Item",
-
         items
-
     )
 
-else:
-
-    selected_item = None
 
 # =========================================================
 # DASHBOARD
@@ -120,116 +206,87 @@ if page == "🏪 Dashboard":
     st.title("🏪 Inventory Dashboard")
 
     if not selected_item:
-
-        st.warning("Please select an item.")
         st.stop()
 
     try:
-
-        # -------------------------------------------------
-        # Step 1 — Get Inventory Status
-        # -------------------------------------------------
-
-        inv_response = requests.get(
-            f"http://localhost:8000/inventory/{selected_item}"
-        )
-
-        if inv_response.status_code != 200:
-
-            st.error(
-                f"Inventory API failed: {inv_response.text}"
-            )
-
-            st.stop()
-
-        inv_data = inv_response.json()
-
-        forecast_values = inv_data.get(
-            "forecast_units", []
-        )
-
-        current_stock = inv_data.get(
-            "current_stock", 0
-        )
-
-        days_of_coverage = inv_data.get(
-            "days_of_coverage", 0
-        )
-
-        reorder_flag = inv_data.get(
-            "reorder_flag", False
-        )
-
-        # -------------------------------------------------
-        # Step 2 — Build window for decision API
-        # -------------------------------------------------
 
         item_df = df[
             df[ITEM_COL] == selected_item
         ]
 
-        window = item_df.tail(28)[[
-            "sales",
-            "sell_price",
-            "wday",
-            "month",
-            "is_event",
-            "is_snap",
-            "lag_7",
-            "lag_28",
-            "rolling_7"
-        ]].values.tolist()
+        window = build_window(item_df)
 
-        if len(window) < 28:
-
-            st.error("Window must contain 28 rows")
-
-            st.stop()
-
-        decision_payload = {
-            "item_id": selected_item,
-            "current_stock": current_stock,
-            "window": window
-        }
-
-        decision_response = requests.post(
-            "http://localhost:8000/decisions/recommend",
-            json=decision_payload
-        )
-
-        if decision_response.status_code != 200:
+        if window is None:
 
             st.error(
-                f"Decision API failed: {decision_response.text}"
+                "Not enough history."
             )
 
             st.stop()
 
-        decision_data = decision_response.json()
-
-        recommended_order = decision_data.get(
-            "recommended_order", 0
+        inv_data = call_inventory_api(
+            selected_item
         )
 
-        shap_data = decision_data.get(
-            "shap_importances", []
+        current_stock = inv_data.get(
+            "current_stock",
+            0
+        )
+
+        days_of_coverage = inv_data.get(
+            "days_of_coverage",
+            0
+        )
+
+        reorder_flag = inv_data.get(
+            "reorder_flag",
+            False
+        )
+
+        decision_data = call_decision_api(
+            selected_item,
+            current_stock,
+            window
+        )
+
+        forecast_values = decision_data.get(
+            "forecast_units",
+            []
+        )
+
+        recommended_order = decision_data.get(
+            "recommended_order",
+            0
         )
 
     except Exception as e:
 
         st.error(f"API error: {e}")
-
         st.stop()
 
-    # -------------------------------------------------
-    # Forecast Plot
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # KPIs
+    # -----------------------------------------------------
+
+    c1, = st.columns(1)
+
+    c1.metric(
+        "🛒 Recommended Order",
+        int(recommended_order)
+    )
+
+    if reorder_flag:
+        st.warning("⚠️ Reorder Recommended")
+    else:
+        st.success("✅ Inventory Stable")
+
+    # -----------------------------------------------------
+    # Forecast
+    # -----------------------------------------------------
 
     if forecast_values:
 
-        st.subheader(
-            "📈 7-Day Forecast"
-        )
+        st.subheader("📈 7-Day Forecast")
 
         days = np.arange(
             1,
@@ -238,66 +295,35 @@ if page == "🏪 Dashboard":
 
         fig, ax = plt.subplots()
 
-        ax.plot(
-            days,
-            forecast_values
-        )
+        ax.plot(days, forecast_values)
 
         ax.set_xlabel("Day")
-
         ax.set_ylabel("Demand")
-
-        ax.set_title(
-            "Upcoming Demand Forecast"
-        )
 
         st.pyplot(fig)
 
-        # Optional forecast table
+    # -----------------------------------------------------
+    # Demand trend
+    # -----------------------------------------------------
 
-        forecast_df = pd.DataFrame({
-            "Day": days,
-            "Forecast Units": forecast_values
-        })
-
-        st.dataframe(
-            forecast_df,
-            use_container_width=True
-        )
-
-    # -------------------------------------------------
-    # Recent Demand Trend
-    # -------------------------------------------------
-
-    st.subheader(
-        "📊 Last 30 Days Demand"
-    )
+    st.subheader("📊 Last 30 Days Demand")
 
     recent_sales = item_df["sales"].tail(30)
 
     fig2, ax2 = plt.subplots()
 
-    ax2.plot(
-        recent_sales.values
-    )
-
-    ax2.set_title(
-        "Recent Demand Trend"
-    )
+    ax2.plot(recent_sales.values)
 
     ax2.set_xlabel("Day")
-
-    ax2.set_ylabel("Units Sold")
+    ax2.set_ylabel("Units")
 
     st.pyplot(fig2)
 
-    # -------------------------------------------------
-    # Top Selling Items
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # Top items
+    # -----------------------------------------------------
 
-    st.subheader(
-        "🏆 Top Selling Items"
-    )
+    st.subheader("🏆 Top Selling Items")
 
     top_items = (
         df.groupby(ITEM_COL)["sales"]
@@ -313,124 +339,72 @@ if page == "🏪 Dashboard":
 
 
 # =========================================================
-# FORECAST
+# FORECAST PAGE
 # =========================================================
 
 elif page == "📦 Forecast":
 
-    st.title("📦 Forecast View")
+    st.title("📦 Forecast")
 
-    st.info("Forecast data comes from trained LSTM model.")
-
-    # -------------------------------------------------
-    # Top Selling Items Table
-    # -------------------------------------------------
-
-    st.subheader("🔥 Top Selling Items")
-
-    top_items = (
-        df.groupby("item_id")["sales"]
-        .mean()
-        .sort_values(ascending=False)
-        .head(10)
-        .reset_index()
-    )
-
-    st.dataframe(
-        top_items,
-        use_container_width=True
-    )
-
-    forecast_days = np.arange(1, 8)
-
-    # -------------------------------------------------
-    # Filter selected item
-    # -------------------------------------------------
-
-    item_df = df[df["item_id"] == selected_item]
-
-    if len(item_df) < 28:
-
-        st.error("Not enough history to generate forecast.")
+    if not selected_item:
         st.stop()
-
-    # -------------------------------------------------
-    # Build correct window (VERY IMPORTANT)
-    # Must match training features exactly
-    # -------------------------------------------------
-
-    window = item_df.tail(28)[[
-        "sales",
-        "sell_price",
-        "wday",
-        "month",
-        "is_event",
-        "is_snap",
-        "lag_7",
-        "lag_28",
-        "rolling_7"
-    ]].values.tolist()
-
-    st.write("Window length:", len(window))  # Debug check
-
-    payload = {
-        "item_id": selected_item,
-        "window": window
-    }
-
-    # -------------------------------------------------
-    # Call Forecast API
-    # -------------------------------------------------
 
     try:
 
-        response = requests.post(
-            "http://localhost:8000/forecast",
-            json=payload
+        item_df = df[
+            df[ITEM_COL] == selected_item
+        ]
+
+        window = build_window(item_df)
+
+        if window is None:
+
+            st.error(
+                "Not enough history."
+            )
+
+            st.stop()
+
+        data = call_forecast_api(
+            selected_item,
+            window
         )
 
-        if response.status_code != 200:
+        forecast_values = data.get(
+            "forecast_units",
+            []
+        )
 
-            st.error(
-                f"API request failed: {response.text}"
-            )
+        st.subheader("📈 Forecast")
 
-            st.stop()
-
-        data = response.json()
-
-        if "forecast_units" not in data:
-
-            st.error(
-                f"Unexpected API response: {data}"
-            )
-
-            st.stop()
-
-        forecast_values = data["forecast_units"]
-
-        # -------------------------------------------------
-        # Plot forecast
-        # -------------------------------------------------
+        days = np.arange(
+            1,
+            len(forecast_values) + 1
+        )
 
         fig, ax = plt.subplots()
 
-        ax.plot(
-            forecast_days,
-            forecast_values
-        )
-
-        ax.set_title("7-Day Forecast")
+        ax.plot(days, forecast_values)
 
         ax.set_xlabel("Day")
-
-        ax.set_ylabel("Demand")
+        ax.set_ylabel("Forecast Units")
 
         st.pyplot(fig)
 
+        forecast_df = pd.DataFrame({
+            "Day": days,
+            "Forecast Units": forecast_values
+        })
+
+        st.dataframe(
+            forecast_df,
+            use_container_width=True
+        )
+
     except Exception as e:
 
-        st.error(f"Forecast API error: {e}")
+        st.error(f"Forecast error: {e}")
+
 
 # =========================================================
 # DECISIONS PAGE
@@ -438,82 +412,41 @@ elif page == "📦 Forecast":
 
 elif page == "🤖 Decisions":
 
-    st.title("🤖 AI Decision Output")
+    st.title("🤖 Inventory Decisions")
 
     if not selected_item:
-
-        st.warning("Please select an item.")
         st.stop()
 
     try:
-
-        # ---------------------------------------------
-        # Build window from data
-        # ---------------------------------------------
 
         item_df = df[
             df[ITEM_COL] == selected_item
         ]
 
-        window = item_df.tail(28)[[
-            "sales",
-            "sell_price",
-            "wday",
-            "month",
-            "is_event",
-            "is_snap",
-            "lag_7",
-            "lag_28",
-            "rolling_7"
-        ]].values.tolist()
+        window = build_window(item_df)
 
-        if len(window) < 28:
+        if window is None:
 
             st.error(
-                "Not enough history for decision."
+                "Not enough history."
             )
 
             st.stop()
 
-        # ---------------------------------------------
-        # Get inventory info
-        # ---------------------------------------------
-
-        inv_response = requests.get(
-            f"http://localhost:8000/inventory/{selected_item}"
+        inv_data = call_inventory_api(
+            selected_item
         )
-
-        inv_data = inv_response.json()
 
         current_stock = inv_data.get(
             "current_stock",
             0
         )
 
-        # ---------------------------------------------
-        # Call Decision API
-        # ---------------------------------------------
-
-        payload = {
-            "item_id": selected_item,
-            "current_stock": current_stock,
-            "window": window
-        }
-
-        response = requests.post(
-            "http://localhost:8000/decisions/recommend",
-            json=payload
+        decision_data = call_decision_api(
+            selected_item,
+            current_stock,
+            window
         )
-
-        if response.status_code != 200:
-
-            st.error(
-                f"Decision API failed: {response.text}"
-            )
-
-            st.stop()
-
-        decision_data = response.json()
 
         recommended_order = decision_data.get(
             "recommended_order",
@@ -530,35 +463,28 @@ elif page == "🤖 Decisions":
             []
         )
 
-        explanation_text = decision_data.get(
-            "explanation_summary",
-            ""
-        )
-
     except Exception as e:
 
-        st.error(f"API error: {e}")
+        st.error(f"Decision API error: {e}")
         st.stop()
 
-    # ---------------------------------------------
-    # KPI Display
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # KPI
+    # -----------------------------------------------------
 
-    col1, = st.columns(1)
-
-    col1.metric(
+    st.metric(
         "🛒 Recommended Order",
-        recommended_order
+        int(recommended_order)
     )
 
-    # ---------------------------------------------
-    # Forecast Plot
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # Forecast
+    # -----------------------------------------------------
 
     if forecast_values:
 
         st.subheader(
-            "📈 Forecast Used for Decision"
+            "📈 Forecast Used"
         )
 
         days = np.arange(
@@ -568,88 +494,22 @@ elif page == "🤖 Decisions":
 
         fig, ax = plt.subplots()
 
-        ax.plot(
-            days,
-            forecast_values
-        )
-
-        ax.set_title(
-            "Forecast Demand"
-        )
+        ax.plot(days, forecast_values)
 
         ax.set_xlabel("Day")
-
-        ax.set_ylabel("Units")
+        ax.set_ylabel("Demand")
 
         st.pyplot(fig)
 
-    # ---------------------------------------------
-    # Explanation Text
-    # ---------------------------------------------
-
-    if explanation_text:
-
-        st.subheader("📝 Decision Explanation")
-
-        try:
-
-            # Convert SHAP to dataframe
-            shap_df = pd.DataFrame(shap_data)
-
-            shap_df = shap_df.sort_values(
-                "value",
-                ascending=False
-            )
-
-            # Take top 3 features
-            top_features = shap_df.head(3)
-
-            prompt = f"""
-    You are an inventory assistant.
-
-    Explain this inventory decision
-    using the actual influencing factors.
-
-    Item:
-    {selected_item}
-
-    Recommended Order:
-    {recommended_order}
-
-    Top Influencing Factors:
-    {top_features.to_dict()}
-
-    Write:
-
-    • Explain clearly WHY the order was made
-    • Mention each factor explicitly
-    • Translate technical names into plain language
-    • Keep it specific (not vague)
-    • Use bullet points
-    """
-
-            genai.configure(api_key=KEY_1)
-
-            model = genai.GenerativeModel(
-                "gemini-2.5-flash"
-            )
-
-            gemini_response = model.generate_content(
-                prompt
-            )
-            st.success(gemini_response.text)
-
-        except Exception as e:
-
-            st.info(explanation_text)
-
-    # ---------------------------------------------
-    # SHAP Plot (Moved from Explainability page)
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # SHAP
+    # -----------------------------------------------------
 
     if shap_data:
 
-        st.subheader("🔍 Feature Contributions")
+        st.subheader(
+            "🔍 Feature Contributions"
+        )
 
         shap_df = pd.DataFrame(
             shap_data
@@ -667,23 +527,67 @@ elif page == "🤖 Decisions":
             shap_df["value"]
         )
 
-        ax.set_title(
-            "SHAP Feature Contributions"
-        )
-
-        ax.set_xlabel("Impact on Order")
+        ax.set_xlabel("Impact")
 
         st.pyplot(fig)
 
-    else:
+        # -------------------------------------------------
+        # Gemini explanation
+        # -------------------------------------------------
 
-        st.warning(
-            "No SHAP data available."
-        )
+        try:
+
+            top_features = shap_df.head(3)
+
+            prompt = f"""
+You are an inventory optimization assistant.
+
+Explain this inventory decision.
+
+Item:
+{selected_item}
+
+Recommended Order:
+{recommended_order}
+
+Forecast:
+{forecast_values}
+
+Top Influencing Features:
+{top_features.to_dict()}
+
+Requirements:
+- Explain WHY the order was recommended
+- Mention the important features
+- Use business-friendly language
+- Use concise bullet points
+"""
+
+            genai.configure(api_key=KEY_1)
+
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash"
+            )
+
+            response = model.generate_content(
+                prompt
+            )
+
+            st.subheader(
+                "📝 AI Explanation"
+            )
+
+            st.success(response.text)
+
+        except Exception as e:
+
+            st.warning(
+                f"Gemini explanation failed: {e}"
+            )
 
 
 # =========================================================
-# AI INSIGHTS PAGE (SHAP + EMBEDDINGS + GEMINI)
+# AI INSIGHTS PAGE
 # =========================================================
 
 elif page == "✨ AI Insights":
@@ -691,103 +595,44 @@ elif page == "✨ AI Insights":
     st.title("✨ AI Insights")
 
     if not selected_item:
-
-        st.warning("Please select an item.")
         st.stop()
 
     try:
-
-        # --------------------------------------------
-        # Build window for decision API
-        # --------------------------------------------
 
         item_df = df[
             df[ITEM_COL] == selected_item
         ]
 
-        window = item_df.tail(28)[[
-            "sales",
-            "sell_price",
-            "wday",
-            "month",
-            "is_event",
-            "is_snap",
-            "lag_7",
-            "lag_28",
-            "rolling_7"
-        ]].values.tolist()
+        window = build_window(item_df)
 
-        payload = {
-            "item_id": selected_item,
-            "current_stock": 0,
-            "window": window
-        }
+        if window is None:
 
-        decision_response = requests.post(
-            "http://localhost:8000/decisions/recommend",
-            json=payload
-        )
+            st.error(
+                "Not enough history."
+            )
 
-        decision_data = decision_response.json()
+            st.stop()
 
-        forecast_values = decision_data.get(
-            "forecast_units", []
-        )
-
-        shap_data = decision_data.get(
-            "shap_importances", []
-        )
-
-        explanation = decision_data.get(
-            "explanation_summary",
-            ""
+        decision_data = call_decision_api(
+            selected_item,
+            0,
+            window
         )
 
         recommended_order = decision_data.get(
-            "recommended_order", 0
+            "recommended_order",
+            0
         )
 
-    except Exception as e:
+        forecast_values = decision_data.get(
+            "forecast_units",
+            []
+        )
 
-        st.error(f"Decision API error: {e}")
-        st.stop()
-
-    # --------------------------------------------
-    # Retrieve Embedding Context
-    # --------------------------------------------
-
-    query_text = f"""
-Explain the most recent inventory decision
-for item {selected_item}.
-"""
-
-    retrieved_chunks = vector_store.query_for_item(
-
-        query_text=query_text,
-
-        item_id=selected_item,
-
-        top_k=5
-    )
-
-    context_text = "\n\n".join(
-        chunk["text"]
-        for chunk in retrieved_chunks
-    )
-
-    # --------------------------------------------
-    # Show Raw Decision Summary
-    # --------------------------------------------
-
-    st.subheader("📌 Decision Summary")
-
-    st.success(explanation)
-
-    # --------------------------------------------
-    # Show Top SHAP Features
-    # --------------------------------------------
-
-    if shap_data:
+        shap_data = decision_data.get(
+            "shap_importances",
+            []
+        )
 
         shap_df = pd.DataFrame(
             shap_data
@@ -798,39 +643,41 @@ for item {selected_item}.
             ascending=False
         )
 
-        top_features = shap_df.head(3)
+        top_features = shap_df.head(5)
 
-        st.subheader(
-            "🔍 Key Influencing Features"
-        )
+    except Exception as e:
 
-        for _, row in top_features.iterrows():
+        st.error(f"AI insight error: {e}")
+        st.stop()
 
-            st.write(
-                f"• **{row['feature']}** "
-                f"({row['direction']})"
-            )
+    st.subheader("📌 Decision Summary")
 
-    # --------------------------------------------
-    # Gemini AI Insight (Uses Embeddings + SHAP)
-    # --------------------------------------------
+    st.write(
+        f"Recommended Order: {recommended_order}"
+    )
 
-    st.subheader("🤖 AI Generated Insights")
+    st.subheader(
+        "🔍 Key Drivers"
+    )
+
+    st.dataframe(
+        top_features,
+        use_container_width=True
+    )
+
+    # -----------------------------------------------------
+    # Gemini insights
+    # -----------------------------------------------------
 
     try:
 
         prompt = f"""
-You are an AI inventory assistant.
+You are an AI inventory optimization assistant.
 
-Use the retrieved inventory knowledge
-and current decision details to generate insights.
+Analyze this inventory situation.
 
-Retrieved Knowledge:
-{context_text}
-
-Current Decision:
-
-Item: {selected_item}
+Item:
+{selected_item}
 
 Recommended Order:
 {recommended_order}
@@ -843,12 +690,12 @@ Top SHAP Features:
 
 Provide:
 
-• Demand outlook  
-• Why this order was recommended  
-• Any stock risks  
-• Practical stock planning advice  
+- demand outlook
+- stock risks
+- reorder reasoning
+- inventory planning suggestions
 
-Use short bullet points.
+Use concise business bullet points.
 """
 
         genai.configure(api_key=KEY_2)
@@ -857,16 +704,18 @@ Use short bullet points.
             "gemini-2.5-flash"
         )
 
-        gemini_response = model.generate_content(
+        response = model.generate_content(
             prompt
         )
 
-        st.info(
-            gemini_response.text
+        st.subheader(
+            "🤖 AI Generated Insights"
         )
+
+        st.info(response.text)
 
     except Exception as e:
 
         st.warning(
-            f"Gemini insight failed: {e}"
+            f"Gemini insights failed: {e}"
         )

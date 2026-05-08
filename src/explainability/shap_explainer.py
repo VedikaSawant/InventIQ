@@ -13,17 +13,35 @@ OUTPUT_DIR = Path("outputs/shap")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FORECAST_FEATURE_NAMES = [
-    "sales", "sell_price", "wday", "month",
-    "is_event", "is_snap",
-    "lag_7", "lag_28", "rolling_7",
+
+    "sell_price",
+
+    "wday",
+    "month",
+    "is_event",
+    "is_snap",
+
+    "lag_1",
+    "lag_7",
+    "lag_14",
+    "lag_28",
+
+    "rolling_7",
+    "rolling_14",
+    "rolling_28",
+
+    "rolling_7_std",
+
+    "days_since_sale",
+    "nonzero_7",
+    "nonzero_28",
+
+    "item_idx",
 ]
 
 AGENT_FEATURE_NAMES = [
-    "current_stock",
-    "forecast_d1", "forecast_d2",
-    "forecast_d3", "forecast_d4",
-    "forecast_d5", "forecast_d6",
-    "forecast_d7",
+    "stock_norm",
+    "forecast_norm",
     "days_since_order",
     "stockout_streak",
 ]
@@ -135,10 +153,11 @@ class ForecastExplainer:
         importance = np.abs(sv).mean(axis=0)
 
         feature_importances = {
-            name: float(importance[i])
-            for i, name in enumerate(
-                FORECAST_FEATURE_NAMES
-            )
+            AGENT_FEATURE_NAMES[i]: float(sv[i])
+            for i in range(min(
+                len(AGENT_FEATURE_NAMES),
+                len(sv)
+            ))
         }
 
         plot_path = _plot_bar(

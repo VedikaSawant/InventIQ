@@ -4,8 +4,4 @@ __pycache__/
 .env
 data/raw/
 outputs/models/
-outputs/vector_store/
 outputs/shap/
-scripts/evaluate_ppo.py
-scripts/plotforecastvsactual.py
-test.py

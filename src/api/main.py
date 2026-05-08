@@ -8,28 +8,30 @@ import os
 import pickle
 from contextlib import asynccontextmanager
 
-import torch
+import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.forecasting.forecasting import (
-    DemandLSTM,
     DemandForecastingSystem
 )
+
 from src.agent.rl_agent import PPOAgent
 
 from src.explainability.shap_explainer import (
     build_agent_explainer,
 )
 
-from src.knowledge.vector_store import VectorStore
-
-# ✅ Updated router imports
 from src.api.routes import router
-from src.api.chat import router as chat_router
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
 
 logger = logging.getLogger(__name__)
+
 
 # =========================================================
 # ENVIRONMENT CONFIG
@@ -42,7 +44,7 @@ MODEL_CHECKPOINT = os.getenv(
 
 PPO_CHECKPOINT = os.getenv(
     "PPO_CHECKPOINT",
-    "outputs/models/ppo_inventory.pt"
+    "ppo_inventory.pt"
 )
 
 SCALER_PATH = os.getenv(
@@ -50,14 +52,14 @@ SCALER_PATH = os.getenv(
     "outputs/models/scaler.pkl"
 )
 
+TARGET_SCALER_PATH = os.getenv(
+    "TARGET_SCALER_PATH",
+    "outputs/models/target_scaler.pkl"
+)
+
 PROCESSED_DATA = os.getenv(
     "PROCESSED_DATA",
     "data/processed/m5_processed.csv"
-)
-
-VECTOR_STORE_DIR = os.getenv(
-    "VECTOR_STORE_DIR",
-    "outputs/vector_store"
 )
 
 MODEL_VERSION = os.getenv(
@@ -73,15 +75,17 @@ MODEL_VERSION = os.getenv(
 class AppState:
 
     trainer = None
+
     ppo_agent = None
+
     scaler = None
 
-    forecast_explainer = None
+    target_scaler = None
+
     agent_explainer = None
 
-    vector_store = None
-
     model_version = None
+
     processed_data_path = None
 
 
@@ -95,10 +99,10 @@ async def lifespan(app: FastAPI):
     ctx = AppState()
 
     # -----------------------------------------------------
-    # 1️⃣ Load LSTM Forecaster
+    # 1️⃣ Load Forecasting System
     # -----------------------------------------------------
 
-    logger.info("Loading DemandLSTM...")
+    logger.info("Loading forecasting system...")
 
     ctx.trainer = DemandForecastingSystem()
 
@@ -106,9 +110,11 @@ async def lifespan(app: FastAPI):
 
     ctx.trainer.model.eval()
 
+    logger.info("Forecasting model loaded ✓")
+
 
     # -----------------------------------------------------
-    # 2️⃣ Load StandardScaler
+    # 2️⃣ Load Feature Scaler
     # -----------------------------------------------------
 
     logger.info(f"Loading scaler from {SCALER_PATH}...")
@@ -116,25 +122,43 @@ async def lifespan(app: FastAPI):
     with open(SCALER_PATH, "rb") as f:
         ctx.scaler = pickle.load(f)
 
+    logger.info("Feature scaler loaded ✓")
+
 
     # -----------------------------------------------------
-    # 3️⃣ Load PPO Agent
+    # 3️⃣ Load Target Scaler
+    # -----------------------------------------------------
+
+    logger.info(
+        f"Loading target scaler from {TARGET_SCALER_PATH}..."
+    )
+
+    with open(TARGET_SCALER_PATH, "rb") as f:
+        ctx.target_scaler = pickle.load(f)
+
+    logger.info("Target scaler loaded ✓")
+
+
+    # -----------------------------------------------------
+    # 4️⃣ Load PPO Agent
     # -----------------------------------------------------
 
     logger.info("Loading PPO agent...")
 
     ctx.ppo_agent = PPOAgent(
-        state_dim=10,
-        n_actions=11
+        state_dim=4,
+        n_actions=5
     )
 
-    ctx.ppo_agent.load("ppo_inventory.pt")
+    ctx.ppo_agent.load(PPO_CHECKPOINT)
 
     ctx.ppo_agent.policy.eval()
 
+    logger.info("PPO agent loaded ✓")
+
 
     # -----------------------------------------------------
-    # 4️⃣ Load SHAP Explainer (Optional)
+    # 5️⃣ Load SHAP Explainer (Optional)
     # -----------------------------------------------------
 
     ctx.agent_explainer = None
@@ -145,8 +169,6 @@ async def lifespan(app: FastAPI):
 
         if os.path.exists(rollout_path):
 
-            import numpy as np
-
             rollout_states = np.load(rollout_path)
 
             ctx.agent_explainer = build_agent_explainer(
@@ -154,30 +176,21 @@ async def lifespan(app: FastAPI):
                 rollout_states
             )
 
-            logger.info("AgentExplainer loaded ✓")
+            logger.info("SHAP explainer loaded ✓")
 
         else:
 
             logger.warning(
-                f"Rollout states not found at {rollout_path} — SHAP disabled"
+                f"Rollout states not found at "
+                f"{rollout_path} — SHAP disabled"
             )
 
     except Exception as e:
 
         logger.warning(
-            f"SHAP explainer init failed (non-fatal): {e}"
+            f"SHAP explainer init failed "
+            f"(non-fatal): {e}"
         )
-
-
-    # -----------------------------------------------------
-    # 5️⃣ Load Vector Store
-    # -----------------------------------------------------
-
-    logger.info("Connecting to VectorStore...")
-
-    ctx.vector_store = VectorStore(
-        persist_dir=VECTOR_STORE_DIR
-    )
 
 
     # -----------------------------------------------------
@@ -189,7 +202,9 @@ async def lifespan(app: FastAPI):
     ctx.processed_data_path = PROCESSED_DATA
 
 
-    # Attach context
+    # -----------------------------------------------------
+    # Attach app state
+    # -----------------------------------------------------
 
     app.state.ctx = ctx
 
@@ -206,7 +221,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="InventIQ API",
-    description="AI-Driven Inventory Optimization — Forecast · Decide · Explain",
+    description=(
+        "AI-Driven Inventory Optimization "
+        "— Forecast · Decide · Explain"
+    ),
     version=MODEL_VERSION,
     lifespan=lifespan,
 )
@@ -228,15 +246,7 @@ app.add_middleware(
 # ROUTERS
 # =========================================================
 
-# ✅ merged standard routes
 app.include_router(router)
-
-# ✅ streaming assistant
-app.include_router(
-    chat_router,
-    prefix="/chat",
-    tags=["Chat"]
-)
 
 
 # =========================================================
@@ -248,5 +258,5 @@ def health():
 
     return {
         "status": "ok",
-        "version": MODEL_VERSION
+        "version": MODEL_VERSION,
     }

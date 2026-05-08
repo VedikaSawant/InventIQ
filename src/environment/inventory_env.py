@@ -9,10 +9,10 @@ import torch
 
 SEQ_LEN = 28
 HORIZON = 7
-N_FEATURES = 14
+N_FEATURES = 17
 
-ACTION_LEVELS = 11
-MAX_ORDER = 40
+ACTION_LEVELS = 5
+MAX_ORDER = 20
 ORDER_STEP = MAX_ORDER // (ACTION_LEVELS - 1)
 
 STATE_DIM = 1 + HORIZON + 1 + 1
@@ -33,9 +33,10 @@ class InventoryEnv(gym.Env):
         feature_matrix,
         forecaster,
         scaler,
+        target_scaler,
         initial_stock=5,
-        holding_cost=1,
-        stockout_penalty=8.0,
+        holding_cost=0.05,
+        stockout_penalty=25.0,
         max_stock=150,
     ):
 
@@ -50,6 +51,7 @@ class InventoryEnv(gym.Env):
 
         self.forecaster = forecaster
         self.scaler = scaler
+        self.target_scaler = target_scaler
 
         self.initial_stock = initial_stock
         self.holding_cost = holding_cost
@@ -58,10 +60,11 @@ class InventoryEnv(gym.Env):
 
         self.action_space = spaces.Discrete(ACTION_LEVELS)
 
-        self.observation_space = spaces.Box(
-            low=np.zeros(STATE_DIM, dtype=np.float32),
-            high=np.ones(STATE_DIM, dtype=np.float32) * np.inf,
-            dtype=np.float32,
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(4,),
+            dtype=np.float32
         )
 
         self.reset()
@@ -193,7 +196,7 @@ class InventoryEnv(gym.Env):
 
         noise = np.random.normal(
             0,
-            max(1, 0.3 * base_demand)
+            max(1, 0.1 * base_demand)
         )
 
         demand_today = max(
@@ -282,18 +285,17 @@ class InventoryEnv(gym.Env):
             scaled.astype(np.float32)
         )
 
-        scaled_preds = self.forecaster(
-            tensor.unsqueeze(0)
-        ).squeeze(0).numpy()
+        with torch.no_grad():
 
-        dummy = np.zeros(
-            (HORIZON, N_FEATURES),
-            dtype=np.float32
+            scaled_preds = self.forecaster(
+                tensor.unsqueeze(0)
+            ).squeeze(0).numpy()
+
+        raw = np.expm1(
+            self.target_scaler.inverse_transform(
+                scaled_preds.reshape(-1, 1)
+            ).flatten()
         )
-
-        dummy[:, 0] = scaled_preds
-
-        raw = self.scaler.inverse_transform(dummy)[:, 0]
 
         return np.maximum(raw, 0.0)
 

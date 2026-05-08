@@ -12,9 +12,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # CONSTANTS (centralized — very important)
 # =========================================================
 
-SEQ_LEN = 14
-HORIZON = 7
-N_FEATURES = 14
+SEQ_LEN = 28
+HORIZON = 1
+N_FEATURES = 17
 
 
 # =========================================================
@@ -22,7 +22,7 @@ N_FEATURES = 14
 # =========================================================
 
 class DemandLSTM(nn.Module):
-    def __init__(self, hidden_size=64, num_layers=2, dropout=0.2):
+    def __init__(self, hidden_size=64, num_layers=2, dropout=0.1):
         super().__init__()
 
         self.lstm = nn.LSTM(
@@ -33,13 +33,13 @@ class DemandLSTM(nn.Module):
             dropout=dropout
         )
 
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.1)
 
         self.head = nn.Sequential(
-            nn.BatchNorm1d(hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(64, HORIZON)
         )
 
@@ -49,9 +49,21 @@ class DemandLSTM(nn.Module):
         return self.head(out)
 
 
-class LogCoshLoss(nn.Module):
+class WeightedMSELoss(nn.Module):
+
+    def __init__(self, nonzero_weight=2.0):
+        super().__init__()
+        self.nonzero_weight = nonzero_weight
+
     def forward(self, pred, target):
-        return torch.mean(torch.log(torch.cosh(pred - target + 1e-8)))
+
+        weights = torch.ones_like(target)
+
+        weights[torch.abs(target) > 0.05] = self.nonzero_weight
+
+        loss = weights * (pred - target) ** 2
+
+        return loss.mean()
 
 # =========================================================
 # TRAINING SYSTEM
@@ -61,7 +73,7 @@ class DemandForecastingSystem:
 
     def __init__(
         self,
-        lr=5e-4,
+        lr=5e-5,
         weight_decay=1e-5,
         device="cpu",
         checkpoint_path="outputs/models/best_model.pt"
@@ -73,7 +85,7 @@ class DemandForecastingSystem:
 
         self.target_scaler = None
 
-        self.criterion = LogCoshLoss()
+        self.criterion = nn.HuberLoss(delta=0.5)
 
         self.optimizer = Adam(
             self.model.parameters(),
@@ -81,16 +93,22 @@ class DemandForecastingSystem:
             weight_decay=weight_decay
         )
 
-        self.scheduler = ReduceLROnPlateau(
+        # self.scheduler = ReduceLROnPlateau(
+        #     self.optimizer,
+        #     mode="min",
+        #     factor=0.5,
+        #     patience=4
+        # )
+
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
-            mode="min",
-            factor=0.5,
-            patience=4
+            T_max=50,
+            eta_min=1e-6
         )
 
         self.checkpoint_path = checkpoint_path
 
-        self.best_val_loss = float("inf")
+        self.best_val_rmse = float("inf")
 
     # =====================================================
     # TRAINING
@@ -100,8 +118,8 @@ class DemandForecastingSystem:
         self,
         train_loader,
         val_loader,
-        epochs=25,
-        early_stop=10
+        epochs=60,
+        early_stop=15
     ):
 
         patience = 0
@@ -110,35 +128,41 @@ class DemandForecastingSystem:
 
             train_loss = self._train_epoch(train_loader)
 
-            val_loss, val_rmse, val_mae, val_r2 = self._validate(val_loader)
+            (
+                val_loss,
+                val_rmse,
+                val_nrmse,
+                val_rmsse,
+                val_mae,
+                val_r2,
+                naive_rmse
+            ) = self._validate(val_loader)
 
-            self.scheduler.step(val_loss)
+            #self.scheduler.step(val_loss)
+            self.scheduler.step()
 
             print(
                 f"Epoch {epoch+1} | "
                 f"Train {train_loss:.4f} | "
                 f"Val {val_loss:.4f} | "
                 f"RMSE {val_rmse:.4f} | "
+                f"NRMSE {val_nrmse:.4f} | "
+                f"RMSSE {val_rmsse:.4f} | "
+                f"NaiveRMSE {naive_rmse:.4f} | "
                 f"MAE {val_mae:.4f} | "
                 f"R2 {val_r2:.4f}"
             )
 
-            if val_loss < self.best_val_loss:
-
-                self.best_val_loss = val_loss
-
+            # In train(), replace the save condition:
+            if val_rmse < self.best_val_rmse:  # track RMSE, not loss
+                self.best_val_rmse = val_rmse
                 self.save()
-
                 patience = 0
-
             else:
-
                 patience += 1
 
             if patience >= early_stop:
-
                 print("Early stopping triggered")
-
                 break
 
     # =====================================================
@@ -175,22 +199,13 @@ class DemandForecastingSystem:
 
         return total_loss / len(loader)
 
-    # =====================================================
-    # VALIDATION
-    # =====================================================
-
     def _validate(self, loader):
-
         self.model.eval()
 
         total_loss = 0
-        total_sq = 0
-        total_abs = 0
 
         all_preds = []
         all_targets = []
-
-        n = 0
 
         with torch.no_grad():
 
@@ -205,50 +220,115 @@ class DemandForecastingSystem:
 
                 total_loss += loss.item()
 
-                total_sq += ((preds - y) ** 2).sum().item()
-                total_abs += (preds - y).abs().sum().item()
-
-                n += y.numel()
-
                 all_preds.append(preds.cpu())
                 all_targets.append(y.cpu())
 
-        mse = total_loss / len(loader)
+        # =====================================================
+        # VALIDATION LOSS
+        # =====================================================
 
-        rmse = (total_sq / n) ** 0.5
+        val_loss = total_loss / len(loader)
 
-        mae = total_abs / n
+        # =====================================================
+        # CONCATENATE ALL PREDICTIONS
+        # =====================================================
 
         preds_all = torch.cat(all_preds)
         targets_all = torch.cat(all_targets)
 
-        # Convert tensors → numpy FIRST
+        preds_np = preds_all.numpy()
+        targets_np = targets_all.numpy()
 
-        preds_np = preds_all.cpu().numpy()
-        targets_np = targets_all.cpu().numpy()
+        # =====================================================
+        # INVERSE TRANSFORM TO REAL SALES SPACE
+        # =====================================================
 
-        # Now inverse scale
+        preds_real = np.expm1(
+            self.target_scaler.inverse_transform(
+                preds_np.reshape(-1, 1)
+            )
+        )
 
-        preds_real = np.expm1(self.target_scaler.inverse_transform(
-            preds_np.reshape(-1, 1)
-        ))
-
-        targets_real = np.expm1(self.target_scaler.inverse_transform(
-            targets_np.reshape(-1, 1)
-        ))
-
-        targets_real = targets_real.reshape(-1, HORIZON)
-        preds_real = preds_real.reshape(-1, HORIZON)
+        targets_real = np.expm1(
+            self.target_scaler.inverse_transform(
+                targets_np.reshape(-1, 1)
+            )
+        )
 
         targets_real = targets_real.flatten()
         preds_real = preds_real.flatten()
 
-        # R² Score
+        # =====================================================
+        # NAIVE BASELINE (last 28-step mean)
+        # =====================================================
+
+        naive_preds = []
+
+        for i in range(28, len(targets_real)):
+            naive_preds.append(
+                targets_real[i-28:i].mean()
+            )
+
+        naive_targets = targets_real[28:]
+
+        naive_rmse = np.sqrt(
+            np.mean(
+                (naive_targets - np.array(naive_preds)) ** 2
+            )
+        )
+
+        # =====================================================
+        # REAL-SCALE METRICS
+        # =====================================================
+
+        rmse = np.sqrt(
+            np.mean((targets_real - preds_real) ** 2)
+        )
+
+        # =====================================================
+        # RMSSE
+        # =====================================================
+
+        naive_diff = np.diff(targets_real)
+
+        scale = np.mean(naive_diff ** 2)
+
+        rmsse = np.sqrt(
+            np.mean((targets_real - preds_real) ** 2)
+            / (scale + 1e-8)
+        )
+
+        # =====================================================
+        # NORMALIZED RMSE
+        # =====================================================
+
+        nrmse = rmse / (targets_real.mean() + 1e-8)
+
+        mae = np.mean(
+            np.abs(targets_real - preds_real)
+        )
+
+        # =====================================================
+        # R² SCORE
+        # =====================================================
+
         ss_res = np.sum((targets_real - preds_real) ** 2)
-        ss_tot = np.sum((targets_real - targets_real.mean()) ** 2)
+
+        ss_tot = np.sum(
+            (targets_real - targets_real.mean()) ** 2
+        )
+
         r2 = 1 - ss_res / ss_tot
 
-        return mse, rmse, mae, r2.item()
+        return (
+            val_loss,
+            rmse,
+            nrmse,
+            rmsse,
+            mae,
+            r2.item(),
+            naive_rmse
+        )
 
     # =====================================================
     # INFERENCE

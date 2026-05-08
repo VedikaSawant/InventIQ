@@ -31,15 +31,65 @@ router = APIRouter()
 # SHARED HELPERS
 # =========================================================
 
-def _inverse_sales(scaled_forecast, scaler):
+def _inverse_sales(
+    scaled_forecast,
+    target_scaler
+):
 
-    dummy = np.zeros((len(scaled_forecast), len(FEATURE_COLS)))
-
-    dummy[:, 0] = scaled_forecast
-
-    raw = scaler.inverse_transform(dummy)[:, 0]
+    raw = np.expm1(
+        target_scaler.inverse_transform(
+            scaled_forecast.reshape(-1, 1)
+        ).flatten()
+    )
 
     return np.maximum(raw, 0.0)
+
+def _recursive_forecast(
+    ctx,
+    scaled_window,
+    horizon=7,
+):
+
+    current_window = scaled_window.copy()
+
+    forecasts = []
+
+    for _ in range(horizon):
+
+        tensor = torch.from_numpy(
+            current_window
+        ).float()
+
+        scaled_fc = ctx.trainer.forecast(tensor)
+
+        pred_scaled = float(
+            scaled_fc.numpy().flatten()[0]
+        )
+
+        pred_raw = float(
+            _inverse_sales(
+                np.array([pred_scaled]),
+                ctx.target_scaler
+            )[0]
+        )
+
+        forecasts.append(pred_raw)
+
+        # -------------------------------------------------
+        # UPDATE WINDOW
+        # -------------------------------------------------
+
+        next_row = current_window[-1].copy()
+
+        # lag_1 index
+        next_row[5] = pred_scaled
+
+        current_window = np.vstack([
+            current_window[1:],
+            next_row
+        ])
+
+    return np.array(forecasts)
 
 
 # =========================================================
@@ -55,11 +105,11 @@ def run_forecast(body: ForecastRequest, request: Request):
 
     scaled = ctx.scaler.transform(window_np)
 
-    tensor = torch.from_numpy(scaled).float()
-
-    scaled_fc = ctx.trainer.forecast(tensor)
-
-    raw_fc = _inverse_sales(scaled_fc.numpy(), ctx.scaler)
+    raw_fc = _recursive_forecast(
+        ctx,
+        scaled,
+        horizon=7
+    )
 
     return ForecastResponse(
         item_id=body.item_id,
@@ -104,11 +154,11 @@ def get_inventory_status(item_id: str, request: Request):
 
         scaled = ctx.scaler.transform(window_np)
 
-        tensor = torch.from_numpy(scaled).float()
-
-        scaled_fc = ctx.trainer.forecast(tensor)
-
-        raw_fc = _inverse_sales(scaled_fc.numpy(), ctx.scaler)
+        raw_fc = _recursive_forecast(
+            ctx,
+            scaled,
+            horizon=7
+        )
 
         forecast_units = raw_fc.tolist()
 
@@ -146,17 +196,20 @@ def recommend_order(body: DecisionRequest, request: Request):
 
     scaled = ctx.scaler.transform(window_np)
 
-    tensor = torch.from_numpy(scaled).float()
-
-    scaled_fc = ctx.trainer.forecast(tensor)
-
-    raw_fc = _inverse_sales(scaled_fc.numpy(), ctx.scaler)
-
-    obs = np.array(
-        [body.current_stock / 500.0]
-        + (raw_fc / 500.0).tolist()
-        + [0.0, 0.0]
+    raw_fc = _recursive_forecast(
+        ctx,
+        scaled,
+        horizon=7
     )
+
+    next_day_forecast = raw_fc[0]
+
+    obs = np.array([
+        body.current_stock / 500.0,
+        next_day_forecast / 500.0,
+        0.0,
+        0.0,
+    ], dtype=np.float32)
 
     action = ctx.ppo_agent.predict(obs)
 
@@ -216,6 +269,7 @@ def run_simulation(body: SimulationRequest, request: Request):
         feature_matrix=feature_matrix,
         forecaster=ctx.trainer.model,
         scaler=ctx.scaler,
+        target_scaler=ctx.target_scaler,
         initial_stock=body.initial_stock,
     )
 
