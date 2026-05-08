@@ -92,16 +92,15 @@ inventiq/
 │   ├── raw/
 │   └── processed/
 │
-├── frontend/
-│   └── app.py
+├── app.py
 │
 ├── outputs/
 │   ├── models/
-│   ├── shap/
-│   └── experiments/
+│   └── shap/
 │
 ├── scripts/
 │   ├── train.py
+│   ├── knowledge.py
 │   └── run_api.py
 │
 ├── src/
@@ -111,13 +110,10 @@ inventiq/
 │   ├── api/
 │   │   ├── main.py
 │   │   ├── routes.py
-│   │   ├── models.py
-│   │   └── schemas.py
+│   │   └── models.py
 │   │
 │   ├── data/
-│   │   ├── data_loader.py
-│   │   ├── pipeline.py
-│   │   └── preprocessing.py
+│   │   └── data_loader.py
 │   │
 │   ├── environment/
 │   │   └── inventory_env.py
@@ -147,7 +143,7 @@ Dataset:
 
 Download from:
 
-[Walmart M5 Forecasting Dataset](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data?utm_source=chatgpt.com)
+[Walmart M5 Forecasting Dataset](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data)
 
 Place files inside:
 
@@ -162,7 +158,7 @@ data/raw/
 ## Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/inventiq.git
+git clone https://github.com/VedikaSawant/inventiq.git
 cd inventiq
 ```
 
