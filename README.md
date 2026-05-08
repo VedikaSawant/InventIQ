@@ -450,12 +450,6 @@ RMSSE is used because it is scale-independent and standard for M5-style forecast
 
 ---
 
-# License
-
-MIT License
-
----
-
 # Acknowledgements
 
 * Walmart M5 Forecasting Competition
