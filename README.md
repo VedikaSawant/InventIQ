@@ -1,283 +1,470 @@
 # InventIQ 🧠📦
-### AI-Driven Inventory Optimization Under Uncertain Demand Using Reinforcement Learning
 
-InventIQ is an end-to-end intelligent inventory management system that combines:
-- **LSTM-based demand forecasting** trained on real Walmart M5 data
-- **PPO reinforcement learning** for adaptive order-quantity decisions
-- **SHAP explainability** to demystify every ordering decision
-- **RAG + Agentic LLM assistant** so store managers can query the system in plain English
+### AI-Driven Inventory Forecasting & Optimization using LSTM + Reinforcement Learning
 
----
+InventIQ is an end-to-end intelligent inventory management system built on the Walmart M5 dataset. It combines:
 
-## Table of Contents
-1. [Architecture Overview](#architecture-overview)
-2. [Project Structure](#project-structure)
-3. [Setup & Installation](#setup--installation)
-4. [Quick Start](#quick-start)
-5. [Pipeline Walkthrough](#pipeline-walkthrough)
-6. [API Reference](#api-reference)
-7. [Configuration](#configuration)
-8. [Dataset](#dataset)
-9. [Key Design Decisions](#key-design-decisions)
+* **LSTM demand forecasting** for predicting future product demand
+* **PPO reinforcement learning** for inventory replenishment decisions
+* **SHAP explainability** for transparent AI-driven decisions
+* **Gemini-powered natural language insights**
+* **FastAPI + Streamlit dashboard** for real-time interaction and visualization
+
+The system is fully CPU-compatible and designed as a practical AI-driven inventory optimization pipeline.
 
 ---
 
-## Architecture Overview
+# Architecture Overview
 
-```
-M5 Raw Data
-    │
-    ▼
-┌──────────────────┐
-│  Data Pipeline   │  sales + calendar + prices → m5_processed.csv
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐
-│  DemandLSTM      │  28-day window → 7-day demand forecast (frozen after training)
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐
-│  InventoryEnv    │  Gym env: state = [stock, forecast×7, days_since_order, stockout_streak]
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐
-│  PPO Agent       │  Discrete(11) actions → order {0, 10, 20, …, 100} units
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐     ┌─────────────────────┐
-│  SHAP Explainer  │────▶│  Knowledge Ingestion │
-└──────────────────┘     │  (ChromaDB / RAG)   │
-                         └─────────────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────┐
-                         │  Agentic Assistant  │  LangChain ReAct + Claude claude-haiku-4-5-20251001
-                         └─────────────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────┐
-                         │  FastAPI REST API   │  /forecast /inventory /decisions /simulation /chat
-                         └─────────────────────┘
+```text
+Walmart M5 Dataset
+        │
+        ▼
+┌────────────────────┐
+│ Data Pipeline      │
+│ Feature Engineering│
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ LSTM Forecaster    │
+│ 28-day history     │
+│ → next-day demand  │
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ Recursive Forecast │
+│ Generate 7-day     │
+│ future trajectory  │
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ PPO Inventory Agent│
+│ Learns reorder     │
+│ quantities         │
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ SHAP Explainability│
+│ Why was this       │
+│ decision taken?    │
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ Gemini AI Insights │
+│ Human-readable     │
+│ inventory analysis │
+└────────────────────┘
+        │
+        ▼
+┌────────────────────┐
+│ FastAPI + Streamlit│
+│ Dashboard & APIs   │
+└────────────────────┘
 ```
 
 ---
 
-## Project Structure
+# Features
 
-```
+* Demand forecasting using LSTM
+* Recursive 7-day forecasting
+* PPO-based inventory optimization
+* Inventory simulation environment using Gymnasium
+* SHAP explanations for RL decisions
+* Gemini-generated AI explanations
+* FastAPI backend
+* Streamlit interactive dashboard
+* CPU-friendly training and inference
+
+---
+
+# Project Structure
+
+```text
 inventiq/
 │
-├── README.md
-├── requirements.txt
-├── config.yaml
-│
 ├── data/
-│   ├── raw/                        ← Place M5 CSV files here
-│   └── processed/                  ← Auto-generated by pipeline
+│   ├── raw/
+│   └── processed/
 │
-├── src/
-│   ├── data/
-│   │   ├── pipeline.py             # Download → filter → merge → clean
-│   │   └── dataset.py              # PyTorch Dataset + time-series windowing
-│   │
-│   ├── forecasting/
-│   │   ├── model.py                # DemandLSTM definition
-│   │   └── trainer.py              # Train / validate / forecast / freeze
-│   │
-│   ├── environment/
-│   │   └── inventory_env.py        # Gym env (state, action, reward)
-│   │
-│   ├── agent/
-│   │   ├── ppo_agent.py            # PPO training loop
-│   │   └── baselines.py            # EOQ, (s,S), reorder-point baselines
-│   │
-│   ├── explainability/
-│   │   └── shap_explainer.py       # DeepSHAP (LSTM) + KernelSHAP (PPO)
-│   │
-│   ├── knowledge/
-│   │   ├── ingestion.py            # SHAP + domain docs → ChromaDB chunks
-│   │   └── vector_store.py         # ChromaDB client (swappable to pgvector)
-│   │
-│   ├── assistant/
-│   │   ├── tools.py                # LLM-callable tools (forecast, stock, what-if, alerts)
-│   │   ├── retriever.py            # Query vector store → relevant chunks
-│   │   └── agent.py                # LangChain ReAct agent
-│   │
-│   └── api/
-│       ├── main.py                 # FastAPI entrypoint + AppState
-│       ├── routers/
-│       │   ├── forecast.py
-│       │   ├── inventory.py
-│       │   ├── decisions.py
-│       │   ├── simulation.py
-│       │   └── chat.py             # SSE streaming assistant response
-│       └── schemas.py
+├── frontend/
+│   └── app.py
 │
 ├── outputs/
-│   ├── models/                     ← Saved checkpoints (best_model.pt, ppo_inventory.pt)
-│   ├── experiments/                ← Training logs + metrics
-│   └── shap/                       ← SHAP plots + serialised explanations
+│   ├── models/
+│   ├── shap/
+│   └── experiments/
 │
-├── notebooks/                      ← Exploratory analysis
+├── scripts/
+│   ├── train.py
+│   └── run_api.py
 │
-└── scripts/
-    ├── run_pipeline.py             # Step 1: Prepare data
-    ├── train_lstm.py               # Step 2: Train DemandLSTM
-    ├── train_ppo.py                # Step 3: Train PPO agent
-    ├── build_knowledge_base.py     # Step 4: Ingest SHAP + docs into ChromaDB
-    └── run_api.py                  # Step 5: Launch FastAPI server
+├── src/
+│   ├── agent/
+│   │   └── rl_agent.py
+│   │
+│   ├── api/
+│   │   ├── main.py
+│   │   ├── routes.py
+│   │   ├── models.py
+│   │   └── schemas.py
+│   │
+│   ├── data/
+│   │   ├── data_loader.py
+│   │   ├── pipeline.py
+│   │   └── preprocessing.py
+│   │
+│   ├── environment/
+│   │   └── inventory_env.py
+│   │
+│   ├── explainability/
+│   │   └── shap_explainer.py
+│   │
+│   └── forecasting/
+│       └── forecasting.py
+│
+├── requirements.txt
+├── config.yaml
+└── README.md
 ```
 
 ---
 
-## Setup & Installation
+# Dataset
 
-### Prerequisites
-- Python 3.10+
-- 8 GB RAM recommended (runs fully on CPU)
-- Kaggle account (to download M5 dataset)
+This project uses the Walmart M5 Forecasting dataset from Kaggle.
 
-### Install
+Dataset:
+
+* `sales_train_evaluation.csv`
+* `calendar.csv`
+* `sell_prices.csv`
+
+Download from:
+
+[Walmart M5 Forecasting Dataset](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data?utm_source=chatgpt.com)
+
+Place files inside:
+
+```text
+data/raw/
+```
+
+---
+
+# Installation
+
+## Clone Repository
 
 ```bash
-git clone https://github.com/your-org/inventiq.git
+git clone https://github.com/yourusername/inventiq.git
 cd inventiq
+```
+
+---
+
+## Create Virtual Environment
+
+```bash
+python -m venv venv
+```
+
+Activate:
+
+### Windows
+
+```bash
+venv\Scripts\activate
+```
+
+### Linux / Mac
+
+```bash
+source venv/bin/activate
+```
+
+---
+
+## Install Requirements
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Environment Variables
+---
 
-Create a `.env` file in the project root:
+# Environment Variables
+
+Create a `.env` file:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=your_api_key_here
 
-# Paths (defaults match config.yaml — override only if needed)
 MODEL_CHECKPOINT=outputs/models/best_model.pt
-PPO_CHECKPOINT=outputs/models/ppo_inventory.pt
+PPO_CHECKPOINT=ppo_inventory.pt
+
 SCALER_PATH=outputs/models/scaler.pkl
+TARGET_SCALER_PATH=outputs/models/target_scaler.pkl
+
 PROCESSED_DATA=data/processed/m5_processed.csv
-VECTOR_STORE_DIR=outputs/chromadb
-MODEL_VERSION=v1.0
 ```
 
 ---
 
-## Quick Start
+# Training Pipeline
+
+## Step 1 — Train Forecasting + PPO Models
 
 ```bash
-# 1. Prepare data (place M5 CSVs in data/raw/ first)
-python scripts/run_pipeline.py
-
-# 2. Train demand forecaster
-python scripts/train_lstm.py
-
-# 3. Train PPO agent (uses frozen LSTM)
-python scripts/train_ppo.py
-
-# 4. Build RAG knowledge base
-python scripts/build_knowledge_base.py
-
-# 5. Launch API
-python scripts/run_api.py
-# → API live at http://localhost:8000
-# → Swagger docs at http://localhost:8000/docs
+python -m scripts.train
 ```
 
----
+This performs:
 
-## Pipeline Walkthrough
+* data preprocessing
+* feature engineering
+* LSTM training
+* PPO training
+* checkpoint saving
 
-### Step 1 — Data Pipeline
-`src/data/pipeline.py` transforms raw M5 files into a clean feature matrix:
+Saved models:
 
-| Column | Description |
-|---|---|
-| `sales` | Daily unit sales |
-| `sell_price` | Item price that week |
-| `wday`, `month`, `year` | Calendar features |
-| `is_event` | Binary holiday/event flag |
-| `is_snap` | SNAP benefit day flag |
-| `lag_7`, `lag_28` | Lagged sales |
-| `rolling_7` | 7-day rolling mean |
-
-### Step 2 — LSTM Forecasting
-- **Input**: `(batch, 28, 9)` — 28-day window of 9 features
-- **Output**: `(batch, 7)` — 7-day demand forecast
-- **Architecture**: 2-layer stacked LSTM → LayerNorm → Dropout → MLP head
-- After training, weights are **frozen** before passing to the RL env
-
-### Step 3 — PPO Inventory Agent
-- **State**: `[current_stock, forecast×7, days_since_order, stockout_streak]` → dim 10
-- **Action**: Discrete(11) → order `{0, 10, 20, ..., 100}` units
-- **Reward**: `-(holding_cost × stock) - (stockout_penalty × unmet_demand)`
-- Uses GAE + entropy bonus for stable training on non-stationary demand
-
-### Step 4 — Explainability
-- **ForecastExplainer**: DeepSHAP on the LSTM, shows which features drove the forecast
-- **AgentExplainer**: KernelSHAP on the PPO policy, shows why a specific order quantity was chosen
-- Outputs are serialised to text and ingested into ChromaDB for RAG retrieval
-
-### Step 5 — Agentic Assistant
-The LangChain ReAct agent answers questions like:
-- *"Why did the system order 200 units today?"*
-- *"Should I trust this forecast given last week was a holiday?"*
-- *"What's the risk if I override this order to 50 units?"*
-
-It grounds answers using: retrieved domain knowledge + live SHAP output + current inventory state.
+* `best_model.pt`
+* `ppo_inventory.pt`
+* `scaler.pkl`
+* `target_scaler.pkl`
 
 ---
 
-## API Reference
+## Optional Flags
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/forecast/{item_id}` | 7-day demand forecast |
-| `GET` | `/inventory/{item_id}` | Current stock state + coverage |
-| `GET` | `/decisions/{item_id}` | PPO order recommendation + SHAP |
-| `POST` | `/simulation/whatif` | What-if scenario comparison |
-| `POST` | `/chat` | Streaming agentic assistant (SSE) |
+Skip preprocessing:
 
-Full interactive docs available at `/docs` when the API is running.
-
----
-
-## Configuration
-
-All tuneable parameters live in `config.yaml`. See the [Configuration section](#configuration) or the inline comments in `config.yaml` for details.
-
----
-
-## Dataset
-
-InventIQ uses the [M5 Forecasting Competition](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data) dataset from Kaggle (Walmart hierarchical sales data).
-
-**Required files** — place in `data/raw/`:
-- `sales_train_evaluation.csv`
-- `calendar.csv`
-- `sell_prices.csv`
-
-**Download via Kaggle CLI:**
 ```bash
-kaggle competitions download -c m5-forecasting-accuracy -p data/raw/
-cd data/raw && unzip m5-forecasting-accuracy.zip
+python -m scripts.train --skip_data
+```
+
+Skip LSTM retraining:
+
+```bash
+python -m scripts.train --skip_lstm
+```
+
+Retrain PPO only:
+
+```bash
+python -m scripts.train --skip_lstm --skip_data
 ```
 
 ---
 
-## Key Design Decisions
+# Run API Server
 
-| Decision | Rationale |
-|---|---|
-| LSTM over Transformer | Faster to train on CPU; sufficient for 7-day horizon with 28-day context |
-| PPO over DQN | Handles non-stationary rewards better; entropy bonus prevents early collapse |
-| ChromaDB over pgvector | Zero-infra local dev; same retriever interface means easy swap at deployment |
-| all-MiniLM-L6-v2 | 384-d, ~80MB, CPU-fast; strong on short technical text (SHAP summaries) |
-| CPU-first design | Reproducible on any laptop; no CUDA dependencies for the core pipeline |
-| Frozen LSTM for RL | Decouples forecasting and decision training; reduces joint optimisation instability |
+```bash
+python -m scripts.run_api
+```
+
+API available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+Swagger docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
 
 ---
+
+# Run Streamlit Dashboard
+
+```bash
+streamlit run frontend/app.py
+```
+
+---
+
+# Forecasting Pipeline
+
+The LSTM model uses:
+
+* 28-day input sequence
+* 17 engineered features
+* single-step forecasting
+
+During inference:
+
+* recursive forecasting generates 7 future days.
+
+---
+
+# Forecasting Features
+
+```text
+sell_price
+wday
+month
+is_event
+is_snap
+
+lag_1
+lag_7
+lag_14
+lag_28
+
+rolling_7
+rolling_14
+rolling_28
+
+rolling_7_std
+
+days_since_sale
+nonzero_7
+nonzero_28
+
+item_idx
+```
+
+---
+
+# PPO Inventory Environment
+
+The PPO agent observes:
+
+```text
+[
+    stock_norm,
+    forecast_norm,
+    days_since_order,
+    stockout_streak
+]
+```
+
+Actions:
+
+```text
+[0, 5, 10, 15, 20]
+```
+
+represent reorder quantities.
+
+---
+
+# Reward Function
+
+The environment optimizes:
+
+* low stockouts
+* low overstock
+* minimal holding costs
+* realistic replenishment behavior
+
+---
+
+# Explainability
+
+## Forecast SHAP
+
+Explains:
+
+* which historical features influenced demand forecasts
+
+## PPO SHAP
+
+Explains:
+
+* why a specific reorder quantity was recommended
+
+Example:
+
+```text
+High forecast demand + low stock
+→ larger reorder recommendation
+```
+
+---
+
+# API Endpoints
+
+| Method | Endpoint            | Description                     |
+| ------ | ------------------- | ------------------------------- |
+| GET    | `/health`           | Health check                    |
+| POST   | `/forecast`         | Generate 7-day demand forecast  |
+| POST   | `/inventory`        | Inventory optimization decision |
+| POST   | `/decision/explain` | SHAP explanations               |
+| POST   | `/simulation`       | Inventory simulation            |
+
+---
+
+# Evaluation Metrics
+
+Forecasting metrics used:
+
+* RMSE
+* MAE
+* R² Score
+* NRMSE
+* RMSSE
+
+RMSSE is used because it is scale-independent and standard for M5-style forecasting evaluation.
+
+---
+
+# Tech Stack
+
+* PyTorch
+* Gymnasium
+* SHAP
+* FastAPI
+* Streamlit
+* Scikit-learn
+* Pandas
+* NumPy
+* Gemini API
+
+---
+
+# Key Design Decisions
+
+| Decision                    | Reason                                     |
+| --------------------------- | ------------------------------------------ |
+| LSTM instead of Transformer | Faster CPU training                        |
+| PPO for inventory control   | Handles sequential decision-making         |
+| Recursive forecasting       | Enables 7-day forecasts without retraining |
+| SHAP explainability         | Transparent AI decisions                   |
+| CPU-first design            | Easy reproducibility                       |
+
+---
+
+# Future Improvements
+
+* Multi-horizon forecasting models
+* Temporal Fusion Transformer (TFT)
+* Multi-store inventory optimization
+* Real-time streaming inventory updates
+* Supplier lead-time modeling
+* Multi-agent reinforcement learning
+
+---
+
+# License
+
+MIT License
+
+---
+
+# Acknowledgements
+
+* Walmart M5 Forecasting Competition
+* PyTorch
+* SHAP
+* Gymnasium
+* FastAPI
+* Streamlit
